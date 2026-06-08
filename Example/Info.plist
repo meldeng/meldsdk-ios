@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Meld Headless Demo</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+
+    <!-- Mercuryo's in-widget KYC liveness needs the camera. -->
+    <key>NSCameraUsageDescription</key>
+    <string>Camera is used for identity verification (KYC) inside the payment widget.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Microphone may be used during identity verification.</string>
+
+    <!-- Injected from Secrets.xcconfig (the .env equivalent); read at runtime by DemoConfig. -->
+    <key>MeldApiKey</key>
+    <string>$(MELD_API_KEY)</string>
+    <key>MeldCustomerId</key>
+    <string>$(MELD_CUSTOMER_ID)</string>
+    <key>MeldApiHost</key>
+    <string>$(MELD_API_HOST)</string>
+</dict>
+</plist>

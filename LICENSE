@@ -1,0 +1,40 @@
+Meld SDK License
+
+Copyright (c) 2026 Meld. All rights reserved.
+
+1. Grant of License.
+   Subject to these terms, Meld grants you a limited, non-exclusive, non-transferable,
+   non-sublicensable, revocable license to install and use this software (the "SDK")
+   solely to integrate and use Meld's services within your own application.
+
+2. Restrictions.
+   Except as expressly permitted above, you may not: (a) copy, modify, or create
+   derivative works of the SDK; (b) distribute, sublicense, sell, rent, lease, or
+   otherwise make the SDK available to any third party except as embedded in your
+   application's normal operation; (c) reverse engineer, decompile, or disassemble the
+   SDK, except to the extent such restriction is prohibited by applicable law; or
+   (d) remove or obscure any proprietary notices.
+
+3. Ownership.
+   The SDK is licensed, not sold. Meld and its licensors retain all right, title, and
+   interest in and to the SDK, including all intellectual property rights.
+
+4. Third-Party Components.
+   The SDK loads and interoperates with third-party provider widgets (e.g. Mercuryo).
+   Your use of those components is governed by the respective provider's terms.
+
+5. Termination.
+   This license terminates automatically if you breach it. On termination you must stop
+   using and remove the SDK.
+
+6. Disclaimer of Warranty.
+   THE SDK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+7. Limitation of Liability.
+   IN NO EVENT SHALL MELD BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
+   WITH THE SDK OR THE USE OR OTHER DEALINGS IN THE SDK.
+
+For licensing questions, contact Meld.
