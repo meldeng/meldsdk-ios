@@ -3,7 +3,7 @@
 A SwiftUI app that runs the full flow: live quote (**You pay** / **You receive**) → editable
 wallet → **Buy** → mount the Mercuryo widget, with a status banner + event log and auto-close on
 a terminal outcome. Same flow and events as the
-[React Native example](../wrappers/react-native/example) and the web demo (in the `meldsdk` repo).
+[React Native example](https://github.com/meldeng/meldsdk-react-native/tree/main/example) and the web demo (in the `meldsdk` repo).
 
 > ⚠️ **POC:** the app creates the order by calling Meld **directly**, so the API key sits in the
 > app. A real app creates the order on its backend — the SDK never sees the key.

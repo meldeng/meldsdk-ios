@@ -11,8 +11,9 @@ entirely on the provider's PCI surface.
 
 **Supported today:** Mercuryo credit/debit card.
 
-> **Building in React Native?** You don't use this Swift API directly — see
-> [React Native](#react-native) for the wrapper.
+> **Building in React Native?** You don't use this Swift API directly — use the
+> [@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native) wrapper
+> (iOS + Android). See [React Native](#react-native) below.
 
 ## Installation
 
@@ -109,7 +110,9 @@ both are client-side UX signals. Mark the order paid only when your backend rece
 [`Example/`](Example) is a SwiftUI app that runs the full flow — live quote, editable wallet,
 **Buy** → mount the Mercuryo widget, with a status banner + event log and auto-close on a
 terminal outcome. See [`Example/README.md`](Example/README.md) for credentials and run steps.
-(The React Native example mirrors it — [`wrappers/react-native/example`](wrappers/react-native/example).)
+(The React Native and Android examples mirror it — see
+[meldsdk-react-native](https://github.com/meldeng/meldsdk-react-native) and
+[meldsdk-android](https://github.com/meldeng/meldsdk-android).)
 
 ## API reference
 
@@ -122,6 +125,8 @@ terminal outcome. See [`Example/README.md`](Example/README.md) for credentials a
 
 ## React Native
 
-Building in React Native? Use the wrapper — the same `configure → capabilities → mount → events`
-flow, exposed as a `<MeldWidget>` component. It lives in this repo (iOS-only for now):
-[`wrappers/react-native`](wrappers/react-native), with its own README and example app.
+Building in React Native? Use the
+**[@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native)** wrapper — the
+same `configure → capabilities → mount → events` flow, exposed as a `<MeldWidget>` component, for
+**iOS and Android**. It lives in its own repo with its own README and example app, and consumes
+this SDK as its iOS dependency (the `MeldSDK` pod).
