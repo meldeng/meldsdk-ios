@@ -31,15 +31,14 @@ targets: [
 ]
 ```
 
-**CocoaPods.** Add to your `Podfile`, then run `pod install`. (This is also how the React Native
-wrapper consumes the SDK.)
+**CocoaPods.** `MeldSDK` is on the public CocoaPods trunk — add it by name and run `pod install`.
+(This is also how the React Native wrapper consumes the SDK.)
 
 ```ruby
-pod 'MeldSDK', :git => 'https://github.com/meldeng/meldsdk-ios.git', :tag => '0.1.1'
+pod 'MeldSDK', '~> 0.1.1'
 ```
 
-Then `import MeldSDK`. _(Pre-release: until a version is tagged, depend on `branch: "main"` —
-`:branch => 'main'` for CocoaPods.)_
+Then `import MeldSDK`.
 
 ## Usage
 
