@@ -22,7 +22,7 @@ and add the **MeldSDK** library to your app target. Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.1.0"),
+    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.1.1"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -35,7 +35,7 @@ targets: [
 wrapper consumes the SDK.)
 
 ```ruby
-pod 'MeldSDK', :git => 'https://github.com/meldeng/meldsdk-ios.git', :tag => '0.1.0'
+pod 'MeldSDK', :git => 'https://github.com/meldeng/meldsdk-ios.git', :tag => '0.1.1'
 ```
 
 Then `import MeldSDK`. _(Pre-release: until a version is tagged, depend on `branch: "main"` —
