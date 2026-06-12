@@ -92,9 +92,10 @@ an app driving several orders at once can tell them apart.
 ## Native Apple Pay
 
 When your backend creates an order with `paymentMethodType: "APPLE_PAY"`, the order isn't an
-embeddable widget — it's a native Apple Pay sheet. `Meld.capabilities(for: order)` reports
-`surface == "native-applepay"` and `embeddable == false`, so don't call `mount`; call
-`presentApplePay`.
+embeddable widget — it's a native Apple Pay sheet. It's the **same `Meld.mount`** as the card
+widget; the order selects the surface. You pass `applePay:` instead of `into:` (there's no view to
+mount into). `Meld.capabilities(for: order)` reports `surface == "native-applepay"` and
+`embeddable == false`.
 
 The order carries the `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`. You supply
 what the sheet and the provider need that the order doesn't carry — the amount/currency/country from
@@ -108,7 +109,7 @@ guard Meld.canPresentApplePay() else {
     return
 }
 
-let handle = try Meld.presentApplePay(order, request: MeldApplePayRequest(
+let handle = try Meld.mount(order, applePay: MeldApplePayRequest(
     amount: 15.00,
     currencyCode: "USD",
     countryCode: "US",
@@ -126,6 +127,8 @@ let handle = try Meld.presentApplePay(order, request: MeldApplePayRequest(
 // handle.unmount() dismisses the sheet if you need to tear it down early.
 ```
 
+The event model is identical to the card flow (see [Events](#events)) — `onReady` /
+`onPaymentSubmitted` / `onStatusChange` / `onCancel` / `onError`, with the same normalized `status`.
 The SDK builds the `PKPaymentRequest`, presents the sheet, and on authorization posts the encrypted
 Apple Pay token to the order's session-scoped process endpoint — **authenticated with the order's
 session token, never an API key**. It transports only the encrypted token and the billing
@@ -171,12 +174,11 @@ terminal outcome. See [`Example/README.md`](Example/README.md) for credentials a
 - `Meld.configure(environment:)` — `.sandbox` or `.production`.
 - `Meld.capabilities(for:)` → `{ embeddable, surface, requiresUserGesture }` — guard with
   `embeddable` before `mount`.
-- `Meld.mount(order, into:, handlers:)` → `MeldWidgetHandle` — mounts the provider widget into
-  a `UIView` you own; `handle.unmount()` tears it down.
+- `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
+  surface and relays its events. Pass `into:` a `UIView` for an embedded widget, or `applePay:` a
+  `MeldApplePayRequest` for an Apple Pay order; `handle.unmount()` tears it down (removes the widget
+  or dismisses the sheet). See [Native Apple Pay](#native-apple-pay).
 - `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
-- `Meld.presentApplePay(order, request:, handlers:)` → `MeldWidgetHandle` — presents the native
-  Apple Pay sheet for an `APPLE_PAY` order; `handle.unmount()` dismisses it. See
-  [Native Apple Pay](#native-apple-pay).
 - `MeldApplePayRequest` — the amount/currency/country/wallet/IP the Apple Pay sheet and provider
   need beyond what the order carries.
 - `MeldOrder.from(jsonData:)` / `.from(jsonString:)` — decode your backend's order response.

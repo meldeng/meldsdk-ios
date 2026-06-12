@@ -22,20 +22,32 @@ final class ApplePayPublicAPITests: XCTestCase {
         XCTAssertTrue(caps.requiresUserGesture)
     }
 
-    func testPresentRejectsNonApplePayOrder() throws {
-        let order = try order(#"{"id":"o1","paymentMethodType":"CREDIT_DEBIT_CARD","paymentMethodResponseDetails":{}}"#)
-        XCTAssertThrowsError(try Meld.presentApplePay(order, request: request)) { error in
+    func testMountDispatchesByOrderType_cardOrderWithoutHostThrowsMissingHost() throws {
+        // The order type selects the adapter — passing `applePay:` doesn't make a card order use
+        // the Apple Pay surface. A card order routed through mount with no host fails for a host.
+        let order = try order(#"{"id":"o1","paymentMethodType":"CREDIT_DEBIT_CARD","paymentMethodResponseDetails":{"serviceProviderWidgetUrl":"https://sandbox-exchange.mrcr.io/x","renderMode":"IFRAME"}}"#)
+        XCTAssertThrowsError(try Meld.mount(order, applePay: request)) { error in
+            guard case MeldMountError.missingHost = error else {
+                return XCTFail("expected missingHost, got \(error)")
+            }
+        }
+    }
+
+    func testMountApplePayOrderWithoutRequestThrowsInvalidOrder() throws {
+        // An Apple Pay order needs the MeldApplePayRequest; mounting without it is a clear error.
+        let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"sessionToken":"jwt","merchantTransactionId":"s","merchantIdentifier":"m"}}"#)
+        XCTAssertThrowsError(try Meld.mount(order)) { error in
             guard case MeldApplePayError.invalidOrder = error else {
                 return XCTFail("expected invalidOrder, got \(error)")
             }
         }
     }
 
-    func testPresentRejectsApplePayOrderMissingSessionToken() throws {
-        // APPLE_PAY but no session token / merchant fields — must fail the order guards, which run
-        // before any PassKit availability check.
+    func testMountApplePayOrderMissingSessionTokenThrowsInvalidOrder() throws {
+        // APPLE_PAY with the request supplied but no session token — must fail the order guards,
+        // which run before any PassKit availability check.
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"merchantTransactionId":"s","merchantIdentifier":"m"}}"#)
-        XCTAssertThrowsError(try Meld.presentApplePay(order, request: request)) { error in
+        XCTAssertThrowsError(try Meld.mount(order, applePay: request)) { error in
             guard case let MeldApplePayError.invalidOrder(detail) = error else {
                 return XCTFail("expected invalidOrder, got \(error)")
             }
