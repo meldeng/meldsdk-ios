@@ -47,16 +47,34 @@ a friendly "Apple Pay isn't available" message instead of presenting the sheet.
 
 To actually present the Apple Pay sheet you need a **paid Apple Developer account**, then:
 
-1. **Merchant id.** Register your Apple Pay merchant identifier with Meld for your account (the
-   server returns it on the order as `merchantIdentifier`) and put the same value in
-   [`MeldDemo.entitlements`](MeldDemo.entitlements) (the committed `merchant.io.meld.demo` is a
-   placeholder).
+1. **Merchant id.** The entitlement ([`MeldDemo.entitlements`](MeldDemo.entitlements)) uses
+   `merchant.io.meld` — the id Meld's sandbox "Friendlies"/"Payment→Prod" accounts are configured
+   with. Replace it if you target a different account.
 2. **Enable it.** Uncomment `CODE_SIGN_ENTITLEMENTS: MeldDemo.entitlements` in
    [`project.yml`](project.yml), enable the **Apple Pay** capability for your team, then
    `xcodegen generate` again.
 3. **Run.** On the Simulator (with a Wallet test card) the sheet presents so you can watch the event
-   flow up to authorization; full processing / Apple Pay **Sandbox** testing needs a real device,
-   the provisioned merchant + Apple Pay Payment Processing certificate, and a sandbox tester Apple ID.
+   flow — but the Simulator returns an **empty token**, so `/process` ends in
+   `EMPTY_APPLE_PAY_TOKEN`. A real transaction needs the real-device flow below.
+
+### Real-device Apple Pay (end-to-end)
+
+Mercuryo's native Apple Pay has **no sandbox / no test token** — a real device is the only way to
+get a token that decrypts. What's required:
+
+- **Sign with the team that owns `merchant.io.meld`** (Meld's paid org team — *not* a free Personal
+  Team, which can't use the Apple Pay capability), with that merchant id in the entitlement.
+- **Payment Processing Certificate** set up with **Mercuryo**: Mercuryo gives you a CSR, you upload
+  it to Apple under `merchant.io.meld`, and return the `.cer` to Mercuryo so they can decrypt the
+  token. (The Merchant Identity cert is web-validation only — not needed for native.)
+- **Backend:** the account behind your `MELD_API_KEY`/customer must be Apple-Pay-configured (e.g.
+  the **"Friendlies"** account `merchant.io.meld`), the customer needs APPROVED KYC, and the
+  `merchantIdentifier`-on-order change must be deployed (until then this demo injects the id).
+- **Device:** a real iPhone with an **App Store Connect sandbox tester** signed in and an
+  [Apple sandbox test card](https://developer.apple.com/apple-pay/sandbox-testing/) in Wallet.
+- **Corridor:** **not US/GB** — Mercuryo blocks native Apple Pay for US/GB users *and* US/GB-issued
+  cards. The demo defaults to a EU corridor (EUR/FR) for this reason; the card networks (Visa/
+  Mastercard), 3DS, and the `LT` merchant country are set by the SDK per Mercuryo's spec.
 
 ## Notes
 

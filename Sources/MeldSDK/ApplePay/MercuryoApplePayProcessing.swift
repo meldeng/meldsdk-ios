@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 // Native Apple Pay processing for Mercuryo. The SDK presents the PassKit sheet, then drives the
 // order's session-scoped endpoint `POST /crypto/session/mercuryo/apple-pay/process`, authenticated
@@ -102,10 +103,16 @@ enum ApplePayResponseInterpreter {
             let reason = message
                 ?? (data?["reason"] as? String)
                 ?? "Apple Pay payment was not accepted"
+            // Surface the raw response envelope (minus huge fields) so integrators can see which
+            // field the server rejected — a generic "Bad request" otherwise hides the cause.
+            let detail = json
+                .flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                .flatMap { String(data: $0, encoding: .utf8) }
             let error = MeldError(
                 orderId: orderId,
                 code: providerCode ?? String(providerStatus ?? httpStatus),
                 message: reason,
+                detail: detail,
                 recoverable: false)
             return ApplePayProcessOutcome(events: [.error(error)], succeeded: false)
         }
@@ -141,6 +148,7 @@ enum ApplePayResponseInterpreter {
 struct MercuryoApplePayClient {
     static let processPath = "/crypto/session/mercuryo/apple-pay/process"
     static let tokenHeader = "X-Crypto-Session-Token"
+    static let log = Logger(subsystem: "io.meld.sdk", category: "ApplePay")
 
     let environment: MeldEnvironment
     let sessionToken: String
@@ -177,6 +185,10 @@ struct MercuryoApplePayClient {
                 return
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if !(200..<300).contains(status) {
+                let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? "<no body>"
+                Self.log.debug("apple-pay /process -> \(status, privacy: .public): \(body, privacy: .public)")
+            }
             let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             completion(.success((status, json)))
         }.resume()

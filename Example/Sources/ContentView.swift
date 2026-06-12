@@ -73,7 +73,7 @@ struct ContentView: View {
                 .padding(.horizontal, 24).padding(.vertical, 7)
                 .background(Color.hex(0x3e6650)).clipShape(RoundedRectangle(cornerRadius: 10))
             Spacer()
-            HStack(spacing: 6) { Text("🇺🇸"); Text("US").foregroundStyle(Color.hex(0x15191f)) }
+            HStack(spacing: 6) { Text(DemoConfig.countryFlag); Text(DemoConfig.country).foregroundStyle(Color.hex(0x15191f)) }
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(.white).clipShape(RoundedRectangle(cornerRadius: 10))
         }
@@ -89,7 +89,7 @@ struct ContentView: View {
                     Text(DemoConfig.sourceAmount).font(.system(size: 38, weight: .bold)).foregroundStyle(Color.hex(0x15191f))
                 }
                 Spacer()
-                chip { Text("🇺🇸"); Text(DemoConfig.sourceCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f)) }
+                chip { Text(DemoConfig.countryFlag); Text(DemoConfig.sourceCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f)) }
             }
             .padding(16)
             presetsRow
@@ -123,7 +123,7 @@ struct ContentView: View {
                 chip {
                     Text("₿").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                         .frame(width: 22, height: 22).background(Color.hex(0xf7931a)).clipShape(Circle())
-                    Text("BTC").fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
+                    Text(DemoConfig.destinationCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
                 }
             }
             .padding(16)
@@ -254,7 +254,13 @@ struct ContentView: View {
                 clientIP: clientIP,
                 paymentMethodType: method.paymentMethodType)
 
-            let order = try MeldOrder.from(jsonData: orderJSON)   // SDK: decode the order
+            // demo-only: until the backend surfaces merchantIdentifier on Apple Pay orders, inject
+            // the entitlement's merchant id so the Simulator sheet can present (no-op for card).
+            let orderData = method == .applePay
+                ? OrderService.injectingMerchantIdIfMissing(orderJSON, DemoConfig.applePayMerchantId)
+                : orderJSON
+
+            let order = try MeldOrder.from(jsonData: orderData)   // SDK: decode the order
             let caps = Meld.capabilities(for: order)              // SDK: what surface is it?
 
             switch method {
@@ -286,10 +292,10 @@ struct ContentView: View {
                 }
                 // The order carries merchantIdentifier/sessionToken/merchantTransactionId; this
                 // request supplies what it doesn't (amount/currency/country/wallet/IP).
+                // Note: merchant country / networks are provider-fixed (Mercuryo), not set here.
                 let request = MeldApplePayRequest(
                     amount: amount,
                     currencyCode: DemoConfig.sourceCurrency,
-                    countryCode: DemoConfig.country,
                     walletAddress: trimmedWallet,
                     clientIpAddress: ip,
                     summaryItemLabel: "Meld Demo — Buy \(DemoConfig.destinationCurrency)")

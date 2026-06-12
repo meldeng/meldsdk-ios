@@ -65,6 +65,7 @@ func makeDemoHandlers(events: EventLog, finish: @escaping (String) -> Void) -> M
         onError: { e in
             events.setStatus(.failed)
             events.record("onError [\(e.code)] \(e.message)")
+            if let detail = e.detail { events.record("  detail: \(detail)") }
             finish("error")
         }
     )

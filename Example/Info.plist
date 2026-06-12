@@ -32,5 +32,11 @@
     <string>$(MELD_CUSTOMER_ID)</string>
     <key>MeldApiHost</key>
     <string>$(MELD_API_HOST)</string>
+    <key>MeldSourceCurrency</key>
+    <string>$(MELD_SOURCE_CURRENCY)</string>
+    <key>MeldDestCurrency</key>
+    <string>$(MELD_DEST_CURRENCY)</string>
+    <key>MeldCountry</key>
+    <string>$(MELD_COUNTRY)</string>
 </dict>
 </plist>

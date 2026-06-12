@@ -11,7 +11,7 @@ final class ApplePayPublicAPITests: XCTestCase {
     }
 
     private let request = MeldApplePayRequest(
-        amount: 15, currencyCode: "USD", countryCode: "US",
+        amount: 15, currencyCode: "EUR",
         walletAddress: "0xWallet", clientIpAddress: "203.0.113.7")
 
     func testCapabilitiesReportApplePayAsNonEmbeddableNativeSheet() throws {

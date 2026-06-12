@@ -11,6 +11,16 @@ struct MercuryoApplePayAdapter: MeldAdapter {
     // Not embeddable — it's a modal native sheet, not mounted into a view. Requires a user gesture.
     let capabilities = MeldCapabilities(embeddable: false, surface: "native-applepay", requiresUserGesture: true)
 
+    // Provider-fixed PKPaymentRequest config, per Mercuryo's native Apple Pay guide:
+    //   - merchant country is Mercuryo's ("LT"), not the user's country
+    //   - Visa + Mastercard only (Amex not supported)
+    //   - 3DS + credit + debit capabilities
+    // NOTE: Mercuryo currently does NOT process native Apple Pay for US/GB users or US/GB-issued
+    // cards — those will fail server-side regardless of these values.
+    private static let merchantCountryCode = "LT"
+    private static let supportedNetworks: [PKPaymentNetwork] = [.visa, .masterCard]
+    private static let merchantCapabilities: PKMerchantCapability = [.threeDSecure, .credit, .debit]
+
     // Apple Pay orders carry no renderMode; the payment method type alone selects this adapter.
     func matches(paymentMethodType: String?, renderMode: String?) -> Bool {
         paymentMethodType == "APPLE_PAY"
@@ -41,6 +51,9 @@ struct MercuryoApplePayAdapter: MeldAdapter {
             merchantIdentifier: merchantIdentifier,
             merchantTransactionId: merchantTransactionId,
             request: request,
+            merchantCountryCode: Self.merchantCountryCode,
+            supportedNetworks: Self.supportedNetworks,
+            merchantCapabilities: Self.merchantCapabilities,
             handlers: handlers,
             client: client)
         coordinator.present()

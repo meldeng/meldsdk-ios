@@ -15,6 +15,11 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
     private let merchantIdentifier: String
     private let merchantTransactionId: String
     private let request: MeldApplePayRequest
+    // Provider-determined PKPaymentRequest config (the adapter supplies these — e.g. Mercuryo
+    // requires merchant country "LT", Visa/Mastercard, and 3DS+credit+debit).
+    private let merchantCountryCode: String
+    private let supportedNetworks: [PKPaymentNetwork]
+    private let merchantCapabilities: PKMerchantCapability
     private let handlers: MeldEventHandlers
     private let client: MercuryoApplePayClient
 
@@ -28,12 +33,18 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
          merchantIdentifier: String,
          merchantTransactionId: String,
          request: MeldApplePayRequest,
+         merchantCountryCode: String,
+         supportedNetworks: [PKPaymentNetwork],
+         merchantCapabilities: PKMerchantCapability,
          handlers: MeldEventHandlers,
          client: MercuryoApplePayClient) {
         self.orderId = orderId
         self.merchantIdentifier = merchantIdentifier
         self.merchantTransactionId = merchantTransactionId
         self.request = request
+        self.merchantCountryCode = merchantCountryCode
+        self.supportedNetworks = supportedNetworks
+        self.merchantCapabilities = merchantCapabilities
         self.handlers = handlers
         self.client = client
     }
@@ -41,9 +52,9 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
     func present() {
         let pkRequest = PKPaymentRequest()
         pkRequest.merchantIdentifier = merchantIdentifier
-        pkRequest.merchantCapabilities = request.merchantCapabilities
-        pkRequest.supportedNetworks = request.supportedNetworks
-        pkRequest.countryCode = request.countryCode
+        pkRequest.merchantCapabilities = merchantCapabilities
+        pkRequest.supportedNetworks = supportedNetworks
+        pkRequest.countryCode = merchantCountryCode
         pkRequest.currencyCode = request.currencyCode
         // We need the cardholder name + billing address for the provider's /process call.
         pkRequest.requiredBillingContactFields = [.name, .postalAddress]
@@ -85,6 +96,18 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         handler completion: @escaping (PKPaymentAuthorizationResult) -> Void
     ) {
         didAuthorize = true
+
+        // The iOS Simulator returns an empty payment token (no Secure Element), so there's nothing
+        // to process. Fail with a clear message rather than posting an empty token and surfacing the
+        // backend's generic "payToken is required". Real Apple Pay must be tested on a device.
+        guard !payment.token.paymentData.isEmpty else {
+            emitError(code: "EMPTY_APPLE_PAY_TOKEN",
+                      message: "Apple Pay returned an empty payment token. This happens on the iOS "
+                          + "Simulator — test Apple Pay on a real device.",
+                      recoverable: false)
+            completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+            return
+        }
 
         guard let name = payment.billingContact?.name,
               let firstName = name.givenName, !firstName.isEmpty,

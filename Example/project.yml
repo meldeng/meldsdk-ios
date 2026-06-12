@@ -26,11 +26,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.meld.demo.app
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Info.plist
-        # Apple Pay is OFF by default so the demo signs/runs on a free Personal Team (which can't
-        # use the Apple Pay capability). To exercise the Apple Pay sheet, you need a paid Apple
-        # Developer account: uncomment the line below (MeldDemo.entitlements holds the merchant id),
-        # enable the Apple Pay capability for your team, and regenerate with `xcodegen generate`.
-        # CODE_SIGN_ENTITLEMENTS: MeldDemo.entitlements
+        # Apple Pay entitlement. ON enables the Apple Pay sheet on the Simulator (frontend/event
+        # preview with the fake merchant id; the Simulator token can't be processed server-side).
+        # NOTE: on a free Personal Team this breaks *device* signing ("…do not support the Apple Pay
+        # capability") — that error is cosmetic for Simulator-only runs. Comment this out to sign
+        # device builds on a Personal Team. Regenerate with `xcodegen generate` after changing.
+        CODE_SIGN_ENTITLEMENTS: MeldDemo.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
