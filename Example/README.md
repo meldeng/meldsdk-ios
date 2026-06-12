@@ -40,17 +40,23 @@ authorization posts the encrypted token to the order's session-scoped process en
 the same `onReady` / `onPaymentSubmitted` / `onStatusChange` / `onCancel` / `onError` events as the
 card flow. (Wiring: [`ApplePay.swift`](Sources/ApplePay.swift).)
 
-One-time setup so the sheet can present and process:
+**Apple Pay is off by default** so the demo signs and runs on a free **Personal Team** — which
+*cannot* use the Apple Pay capability (Xcode shows "Personal development teams … do not support the
+Apple Pay capability"). The card flow works regardless. With Apple Pay off, selecting it just shows
+a friendly "Apple Pay isn't available" message instead of presenting the sheet.
 
-- **Merchant id.** Your Apple Pay merchant identifier must be registered with Meld for your account
-  (the server returns it on the order as `merchantIdentifier`) **and** listed in
-  [`MeldDemo.entitlements`](MeldDemo.entitlements). The committed value `merchant.io.meld.demo` is a
-  placeholder — replace it with yours.
-- **On the Simulator:** add a test card via **Features ▸ … / Wallet** so `canMakePayments()` is true;
-  the entitlement isn't enforced, so the sheet presents and you can watch the event flow up to
-  authorization. Full processing needs a real provisioned merchant.
-- **On a real device:** enable the **Apple Pay** capability with that merchant id in your Apple
-  Developer account so signing includes the In-App Payments entitlement.
+To actually present the Apple Pay sheet you need a **paid Apple Developer account**, then:
+
+1. **Merchant id.** Register your Apple Pay merchant identifier with Meld for your account (the
+   server returns it on the order as `merchantIdentifier`) and put the same value in
+   [`MeldDemo.entitlements`](MeldDemo.entitlements) (the committed `merchant.io.meld.demo` is a
+   placeholder).
+2. **Enable it.** Uncomment `CODE_SIGN_ENTITLEMENTS: MeldDemo.entitlements` in
+   [`project.yml`](project.yml), enable the **Apple Pay** capability for your team, then
+   `xcodegen generate` again.
+3. **Run.** On the Simulator (with a Wallet test card) the sheet presents so you can watch the event
+   flow up to authorization; full processing / Apple Pay **Sandbox** testing needs a real device,
+   the provisioned merchant + Apple Pay Payment Processing certificate, and a sandbox tester Apple ID.
 
 ## Notes
 
