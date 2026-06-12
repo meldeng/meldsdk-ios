@@ -1,4 +1,5 @@
 import Foundation
+import PassKit
 import UIKit
 
 // Public surface of the SDK. The same shape as the web SDK (@meldcrypto/sdk):
@@ -161,7 +162,12 @@ public enum Meld {
     }
 
     public static func capabilities(for order: MeldOrder) -> MeldCapabilities {
-        adapter(for: order)?.capabilities
+        // Apple Pay is a native modal sheet, not a widget mounted into a view: it's not
+        // `embeddable` (guard with this before `mount`), and is presented via `presentApplePay`.
+        if order.paymentMethodType == "APPLE_PAY" {
+            return MeldCapabilities(embeddable: false, surface: "native-applepay", requiresUserGesture: true)
+        }
+        return adapter(for: order)?.capabilities
             ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
     }
 
@@ -191,5 +197,66 @@ public enum Meld {
     static func adapter(for order: MeldOrder) -> MeldAdapter? {
         let mode = order.paymentMethodResponseDetails?.renderMode
         return adapters.first { $0.matches(paymentMethodType: order.paymentMethodType, renderMode: mode) }
+    }
+}
+
+// MARK: - Native Apple Pay
+
+public extension Meld {
+    /// Whether this device and user can pay with Apple Pay right now (a card is provisioned and
+    /// payments aren't restricted). Check before offering an Apple Pay button.
+    static func canPresentApplePay() -> Bool {
+        PKPaymentAuthorizationController.canMakePayments()
+    }
+
+    /// Present the native Apple Pay sheet for an `APPLE_PAY` order and drive it to completion.
+    ///
+    /// Unlike `mount`, Apple Pay isn't embedded in a view you own — PassKit presents its own modal
+    /// sheet. On authorization the SDK posts the encrypted token to the order's session-scoped
+    /// `/process` endpoint (authenticated with the order's session token — no API key) and relays
+    /// the outcome through `handlers`. As everywhere in the SDK, settlement is your webhook, not
+    /// `onPaymentSubmitted` or a `completed` status.
+    ///
+    /// The order supplies `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`; the
+    /// `request` supplies what the sheet and `/process` need that the order doesn't carry (amount,
+    /// currency, country, destination wallet, end-user IP).
+    ///
+    /// - Returns: a handle whose `unmount()` dismisses the sheet.
+    /// - Throws: `MeldApplePayError` if the order isn't a usable Apple Pay order or Apple Pay is
+    ///   unavailable.
+    @discardableResult
+    static func presentApplePay(
+        _ order: MeldOrder,
+        request: MeldApplePayRequest,
+        handlers: MeldEventHandlers = MeldEventHandlers()
+    ) throws -> MeldWidgetHandle {
+        guard order.paymentMethodType == "APPLE_PAY" else {
+            throw MeldApplePayError.invalidOrder(
+                "Order paymentMethodType is \(order.paymentMethodType ?? "nil"); expected APPLE_PAY.")
+        }
+        let details = order.paymentMethodResponseDetails
+        guard let sessionToken = details?["sessionToken"] as? String, !sessionToken.isEmpty else {
+            throw MeldApplePayError.invalidOrder("Apple Pay order is missing sessionToken.")
+        }
+        guard let merchantTransactionId = details?["merchantTransactionId"] as? String,
+              !merchantTransactionId.isEmpty else {
+            throw MeldApplePayError.invalidOrder("Apple Pay order is missing merchantTransactionId.")
+        }
+        guard let merchantIdentifier = details?["merchantIdentifier"] as? String, !merchantIdentifier.isEmpty else {
+            throw MeldApplePayError.invalidOrder(
+                "Apple Pay order is missing merchantIdentifier — the account may not be configured for Apple Pay.")
+        }
+        guard canPresentApplePay() else { throw MeldApplePayError.unavailable }
+
+        let client = MercuryoApplePayClient(environment: environment, sessionToken: sessionToken)
+        let coordinator = ApplePayCoordinator(
+            orderId: order.id,
+            merchantIdentifier: merchantIdentifier,
+            merchantTransactionId: merchantTransactionId,
+            request: request,
+            handlers: handlers,
+            client: client)
+        coordinator.present()
+        return MeldWidgetHandle(mode: "native-applepay", session: coordinator)
     }
 }

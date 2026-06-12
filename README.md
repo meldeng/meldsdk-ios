@@ -9,7 +9,8 @@ The SDK is a **container manager and event relay** — it never renders card inp
 or transports PAN/CVC, and never reaches into the provider's content. Card capture happens
 entirely on the provider's PCI surface.
 
-**Supported today:** Mercuryo credit/debit card.
+**Supported today:** Mercuryo credit/debit card (embedded widget) and Mercuryo **native Apple Pay**
+(PassKit sheet — see [Native Apple Pay](#native-apple-pay)).
 
 > **Building in React Native?** You don't use this Swift API directly — use the
 > [@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native) wrapper
@@ -88,6 +89,58 @@ is available in `providerStatus` for logging). A terminal `failed` also fires `o
 Every callback receives the id of the order it relates to (shown as `_` above where unused), so
 an app driving several orders at once can tell them apart.
 
+## Native Apple Pay
+
+When your backend creates an order with `paymentMethodType: "APPLE_PAY"`, the order isn't an
+embeddable widget — it's a native Apple Pay sheet. `Meld.capabilities(for: order)` reports
+`surface == "native-applepay"` and `embeddable == false`, so don't call `mount`; call
+`presentApplePay`.
+
+The order carries the `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`. You supply
+what the sheet and the provider need that the order doesn't carry — the amount/currency/country from
+the quote you created the order against, the destination wallet, and the end-user IP:
+
+```swift
+import MeldSDK
+
+guard Meld.canPresentApplePay() else {
+    // No card provisioned or Apple Pay restricted — fall back to the card flow.
+    return
+}
+
+let handle = try Meld.presentApplePay(order, request: MeldApplePayRequest(
+    amount: 15.00,
+    currencyCode: "USD",
+    countryCode: "US",
+    walletAddress: "bc1q…",
+    clientIpAddress: endUserPublicIP,         // same IP constraint as order creation
+    summaryItemLabel: "Acme — Buy BTC"
+), handlers: MeldEventHandlers(
+    onReady:            { _ in /* sheet presented */ },
+    onPaymentSubmitted: { _ in showProcessing() },  // ⚠ UX hint — settlement is your webhook
+    onStatusChange:     { e in if e.status == .completed { showOrderComplete() } },
+    onCancel:           { _ in /* user dismissed the sheet */ },
+    onError:            { e in showError(e.message) }
+))
+
+// handle.unmount() dismisses the sheet if you need to tear it down early.
+```
+
+The SDK builds the `PKPaymentRequest`, presents the sheet, and on authorization posts the encrypted
+Apple Pay token to the order's session-scoped process endpoint — **authenticated with the order's
+session token, never an API key**. It transports only the encrypted token and the billing
+name/address Apple returns; it never sees a PAN. The same event model and settlement rule apply.
+
+**Prerequisites (one-time, in your Apple Developer account):**
+
+- An **Apple Pay merchant identifier** (`merchant.…`) and the **Apple Pay Payment Processing** +
+  **Merchant Identity** certificates registered with Meld for your account. Meld resolves your
+  per-account merchant id server-side and returns it on the order as `merchantIdentifier`; if it's
+  absent, the account isn't configured for Apple Pay and `presentApplePay` throws
+  `MeldApplePayError.invalidOrder`.
+- The **Apple Pay capability** enabled on your app target, with the same merchant id in your app's
+  entitlements.
+
 ## Settlement — webhook, never the SDK
 
 Neither `onPaymentSubmitted` nor `onStatusChange` with `status == .completed` is settlement —
@@ -120,6 +173,12 @@ terminal outcome. See [`Example/README.md`](Example/README.md) for credentials a
   `embeddable` before `mount`.
 - `Meld.mount(order, into:, handlers:)` → `MeldWidgetHandle` — mounts the provider widget into
   a `UIView` you own; `handle.unmount()` tears it down.
+- `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
+- `Meld.presentApplePay(order, request:, handlers:)` → `MeldWidgetHandle` — presents the native
+  Apple Pay sheet for an `APPLE_PAY` order; `handle.unmount()` dismisses it. See
+  [Native Apple Pay](#native-apple-pay).
+- `MeldApplePayRequest` — the amount/currency/country/wallet/IP the Apple Pay sheet and provider
+  need beyond what the order carries.
 - `MeldOrder.from(jsonData:)` / `.from(jsonString:)` — decode your backend's order response.
 
 ## React Native
