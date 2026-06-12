@@ -8,17 +8,25 @@ import MeldSDK
 // Anything tagged "demo-only" (the status banner, event log, console logging, auto-close) is
 // just for this example. A real app keeps steps 1–3 and reacts to the events however it likes.
 
-/// Full-screen sheet hosting the provider widget, with a status banner + event log underneath.
+/// Full-screen sheet hosting the order's surface, with a status banner + event log underneath.
+/// Card orders embed the Mercuryo widget (`WidgetContainer`); Apple Pay orders present the native
+/// PassKit sheet (`ApplePayHost`) — both go through `Meld.mount` and feed the same event log.
 struct WidgetScreen: View {
     let order: MeldOrder
+    let applePay: MeldApplePayRequest?
     @ObservedObject var events: EventLog
     let onClose: () -> Void
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                WidgetContainer(order: order, events: events, onClose: onClose)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let applePay {
+                    ApplePayHost(order: order, request: applePay, events: events, onClose: onClose)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    WidgetContainer(order: order, events: events, onClose: onClose)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 VStack(spacing: 8) { // demo-only
                     StatusBanner(status: events.status)
                     EventLogView(lines: events.lines)
@@ -27,13 +35,39 @@ struct WidgetScreen: View {
                 .background(.thinMaterial)
             }
             .ignoresSafeArea(edges: .bottom)
-            .navigationTitle("Mercuryo")
+            .navigationTitle(applePay == nil ? "Mercuryo" : "Apple Pay")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Back", action: onClose) }
             }
         }
     }
+}
+
+/// Builds the demo's event handlers — log each event, drive the status banner, and call `finish`
+/// on a terminal outcome. Shared by the card widget and the Apple Pay sheet so both demos react
+/// to the (identical) event model the same way.
+func makeDemoHandlers(events: EventLog, finish: @escaping (String) -> Void) -> MeldEventHandlers {
+    MeldEventHandlers(
+        onReady: { _ in events.record("onReady") },
+        onPaymentSubmitted: { _ in events.record("onPaymentSubmitted (UX hint, not settled)") },
+        onStatusChange: { e in
+            events.setStatus(e.status)
+            events.record("onStatusChange: \(e.status.rawValue) (\(e.providerStatus ?? "-"))")
+            if e.status == .completed { finish("completed") }
+            if e.status == .failed { finish("failed") }
+        },
+        onCancel: { _ in
+            events.setStatus(.cancelled)
+            events.record("onCancel")
+            finish("cancelled")
+        },
+        onError: { e in
+            events.setStatus(.failed)
+            events.record("onError [\(e.code)] \(e.message)")
+            finish("error")
+        }
+    )
 }
 
 /// Bridges `Meld.mount` into SwiftUI. This is the part you adapt for your own app.
@@ -77,26 +111,7 @@ struct WidgetContainer: UIViewRepresentable {
         // SDK: react to the widget's lifecycle. Here we log each event, drive the status banner,
         // and (for the demo) close the screen on a terminal outcome.
         func eventHandlers() -> MeldEventHandlers {
-            MeldEventHandlers(
-                onReady: { _ in self.events.record("onReady") },
-                onPaymentSubmitted: { _ in self.events.record("onPaymentSubmitted (UX hint, not settled)") },
-                onStatusChange: { e in
-                    self.events.setStatus(e.status)
-                    self.events.record("onStatusChange: \(e.status.rawValue) (\(e.providerStatus ?? "-"))")
-                    if e.status == .completed { self.finish("completed") }
-                    if e.status == .failed { self.finish("failed") }
-                },
-                onCancel: { _ in
-                    self.events.setStatus(.cancelled)
-                    self.events.record("onCancel")
-                    self.finish("cancelled")
-                },
-                onError: { e in
-                    self.events.setStatus(.failed)
-                    self.events.record("onError [\(e.code)] \(e.message)")
-                    self.finish("error")
-                }
-            )
+            makeDemoHandlers(events: events, finish: finish)
         }
 
         // demo-only: close the screen once, shortly after a terminal event, so the outcome shows.
@@ -112,7 +127,7 @@ struct WidgetContainer: UIViewRepresentable {
 // MARK: - demo-only views
 
 /// Colored banner reflecting the normalized status (same labels as the web demo).
-private struct StatusBanner: View {
+struct StatusBanner: View {
     let status: MeldStatus?
 
     var body: some View {
@@ -145,7 +160,7 @@ private struct StatusBanner: View {
 }
 
 /// Scrollable, timestamped log of the SDK events (auto-scrolls to the latest).
-private struct EventLogView: View {
+struct EventLogView: View {
     let lines: [String]
 
     var body: some View {

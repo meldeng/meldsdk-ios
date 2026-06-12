@@ -83,13 +83,20 @@ struct OrderService {
     }
 
     /// `POST /crypto/order/headless` — returns the raw order JSON to hand to `MeldOrder.from`.
-    func createOrder(customerId: String, wallet: String, clientIP: String?) async throws -> Data {
+    /// `paymentMethodType` is `CREDIT_DEBIT_CARD` (embedded widget) or `APPLE_PAY` (native sheet);
+    /// the SDK reads the right surface off the response either way.
+    func createOrder(
+        customerId: String,
+        wallet: String,
+        clientIP: String?,
+        paymentMethodType: String = "CREDIT_DEBIT_CARD"
+    ) async throws -> Data {
         var body: [String: Any] = [
             "customerId": customerId,
             "externalOrderId": "ios-demo-\(Int(Date().timeIntervalSince1970 * 1000))",
             "sessionType": "BUY",
             "serviceProvider": "MERCURYO",
-            "paymentMethodType": "CREDIT_DEBIT_CARD",
+            "paymentMethodType": paymentMethodType,
             "sourceCurrencyCode": DemoConfig.sourceCurrency,
             "sourceAmount": DemoConfig.sourceAmount,
             "destinationCurrencyCode": DemoConfig.destinationCurrency,
