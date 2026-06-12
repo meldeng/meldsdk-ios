@@ -17,5 +17,5 @@ Pod::Spec.new do |s|
   s.swift_version    = '5.9'
 
   s.source_files     = 'Sources/MeldSDK/**/*.swift'
-  s.frameworks       = 'UIKit', 'WebKit'
+  s.frameworks       = 'UIKit', 'WebKit', 'PassKit', 'Contacts'
 end

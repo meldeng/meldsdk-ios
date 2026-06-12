@@ -1,4 +1,5 @@
 import Foundation
+import PassKit
 import UIKit
 
 // Public surface of the SDK. The same shape as the web SDK (@meldcrypto/sdk):
@@ -122,6 +123,8 @@ public enum MeldMountError: LocalizedError {
     /// lists whatever providers are supported without hardcoding any provider here.
     case unsupported(String)
     case missingWidgetURL
+    /// This order's surface is an embedded widget, but `mount` was called without a host view.
+    case missingHost(String)
 
     public var errorDescription: String? {
         switch self {
@@ -129,6 +132,8 @@ public enum MeldMountError: LocalizedError {
             return detail
         case .missingWidgetURL:
             return "Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load."
+        case let .missingHost(label):
+            return "\(label) renders into a view — call mount(_:into:handlers:) with a host UIView."
         }
     }
 }
@@ -154,6 +159,7 @@ public enum Meld {
     // entry here, never a change to the public API or the generic widget host.
     static let adapters: [MeldAdapter] = [
         MercuryoCardAdapter(),
+        MercuryoApplePayAdapter(),
     ]
 
     public static func configure(environment: MeldEnvironment) {
@@ -165,12 +171,21 @@ public enum Meld {
             ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
     }
 
-    /// Mount the provider widget into a host `UIView` you own. Returns a handle; call
-    /// `handle.unmount()` to tear down.
+    /// Mount the order's payment surface and relay its lifecycle through `handlers`. One call for
+    /// every surface — the order selects the adapter, which renders the right thing:
+    ///
+    /// - **Embedded widget** (e.g. Mercuryo card): pass the `UIView` you own as `into:`.
+    ///   `Meld.mount(order, into: containerView, handlers:)`
+    /// - **Native Apple Pay sheet**: pass `applePay:` with the amount/currency/country/wallet/IP the
+    ///   order doesn't carry; `into:` is ignored. `Meld.mount(order, applePay: request, handlers:)`
+    ///
+    /// Returns a handle; `handle.unmount()` tears down the surface (removes the widget or dismisses
+    /// the sheet). Each surface validates the inputs it needs and throws if they're missing.
     @discardableResult
     public static func mount(
         _ order: MeldOrder,
-        into host: UIView,
+        into host: UIView? = nil,
+        applePay: MeldApplePayRequest? = nil,
         handlers: MeldEventHandlers = MeldEventHandlers()
     ) throws -> MeldWidgetHandle {
         guard let adapter = adapter(for: order) else {
@@ -178,12 +193,13 @@ public enum Meld {
             let mode = order.paymentMethodResponseDetails?.renderMode ?? "nil"
             let supported = adapters.map(\.label).joined(separator: ", ")
             throw MeldMountError.unsupported(
-                "No embeddable adapter for paymentMethodType=\(type) renderMode=\(mode). "
-                    + "This SDK supports: \(supported). "
-                    + "Guard with Meld.capabilities(for:).embeddable before mount.")
+                "No adapter for paymentMethodType=\(type) renderMode=\(mode). "
+                    + "This SDK supports: \(supported).")
         }
-        // The adapter owns how its widget is rendered (URL in a WebView, provider SDK, …).
-        let session = try adapter.mount(order: order, into: host, handlers: handlers)
+        // The adapter owns how its surface is rendered (URL in a WebView, native PassKit sheet, …)
+        // and validates whatever it needs from the context.
+        let context = MeldMountContext(host: host, applePay: applePay)
+        let session = try adapter.mount(order: order, context: context, handlers: handlers)
         return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session)
     }
 
@@ -191,5 +207,16 @@ public enum Meld {
     static func adapter(for order: MeldOrder) -> MeldAdapter? {
         let mode = order.paymentMethodResponseDetails?.renderMode
         return adapters.first { $0.matches(paymentMethodType: order.paymentMethodType, renderMode: mode) }
+    }
+}
+
+// MARK: - Native Apple Pay
+
+public extension Meld {
+    /// Whether this device and user can pay with Apple Pay right now (a card is provisioned and
+    /// payments aren't restricted). Check before offering an Apple Pay button; Apple Pay orders are
+    /// then presented through the normal `Meld.mount(order, applePay:handlers:)`.
+    static func canPresentApplePay() -> Bool {
+        PKPaymentAuthorizationController.canMakePayments()
     }
 }

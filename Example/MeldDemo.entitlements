@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Apple Pay capability. Replace this placeholder with YOUR Apple Pay merchant identifier —
+         the same one registered with Meld for your account (the server returns it on the order as
+         merchantIdentifier). On the Simulator the entitlement isn't enforced, so the sheet still
+         presents with a test card; on a real device the merchant id must exist in your Apple
+         Developer account and match your provisioning profile. -->
+    <key>com.apple.developer.in-app-payments</key>
+    <array>
+        <string>merchant.io.meld.demo</string>
+    </array>
+</dict>
+</plist>

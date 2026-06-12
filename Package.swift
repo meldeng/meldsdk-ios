@@ -9,5 +9,6 @@ let package = Package(
     ],
     targets: [
         .target(name: "MeldSDK", path: "Sources/MeldSDK"),
+        .testTarget(name: "MeldSDKTests", dependencies: ["MeldSDK"], path: "Tests/MeldSDKTests"),
     ]
 )

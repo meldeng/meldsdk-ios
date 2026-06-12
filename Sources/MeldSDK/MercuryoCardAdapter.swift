@@ -17,7 +17,10 @@ struct MercuryoCardAdapter: MeldAdapter {
         paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME"
     }
 
-    func mount(order: MeldOrder, into host: UIView, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+    func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+        guard let host = context.host else {
+            throw MeldMountError.missingHost(label)
+        }
         guard let urlString = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl,
               let url = URL(string: urlString) else {
             throw MeldMountError.missingWidgetURL
