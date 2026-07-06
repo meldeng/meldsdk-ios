@@ -31,8 +31,10 @@ protocol MeldAdapter {
     /// What this adapter can do with a matching order.
     var capabilities: MeldCapabilities { get }
 
-    /// Whether this adapter handles the given order discriminators.
-    func matches(paymentMethodType: String?, renderMode: String?) -> Bool
+    /// Whether this adapter handles the given order discriminators. `widgetUrl` lets an adapter
+    /// distinguish providers that share a (paymentMethodType, renderMode) — e.g. two `IFRAME` card
+    /// providers — by widget host.
+    func matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?) -> Bool
 
     /// Render the order's widget into the host view, wiring its lifecycle to `handlers`, and
     /// return a session to tear it down. Throws if the order lacks what this adapter needs.

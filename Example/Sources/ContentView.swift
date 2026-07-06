@@ -12,15 +12,18 @@ struct ContentView: View {
     @State private var customerId = ""
     @State private var clientIP: String?
     @State private var receiveText = "…"
-    @State private var quoteNote = "fetching live quote…"
-    @State private var rateText = "Credit / debit card rail"
+    @State private var quoteNote = "fetching live quotes…"
     @State private var errorText = ""
     @State private var creating = false
     @State private var presentedOrder: PresentedOrder?
+    @State private var providers: [DemoQuote] = []
+    @State private var selectedProvider: String?
 
     /// The server-held customer id is preferred; show an input only when it isn't set.
     private var needsCustomerField: Bool { DemoConfig.meldCustomerId.isEmpty }
-    private var buyDisabled: Bool { creating || wallet.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var buyDisabled: Bool {
+        creating || wallet.trimmingCharacters(in: .whitespaces).isEmpty || selectedProvider == nil
+    }
 
     var body: some View {
         ZStack {
@@ -31,7 +34,9 @@ struct ContentView: View {
         }
         .task { await load() }
         .fullScreenCover(item: $presentedOrder) { presented in
-            WidgetScreen(order: presented.order, events: events) { presentedOrder = nil }
+            WidgetScreen(order: presented.order, providerName: presented.providerName, events: events) {
+                presentedOrder = nil
+            }
         }
     }
 
@@ -40,6 +45,7 @@ struct ContentView: View {
             header
             payPanel
             receivePanel
+            providerPicker
             fieldLabel("Wallet Address")
             field($wallet)
             if needsCustomerField {
@@ -118,24 +124,72 @@ struct ContentView: View {
                 }
                 Spacer()
                 chip {
-                    Text("₿").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                        .frame(width: 22, height: 22).background(Color.hex(0xf7931a)).clipShape(Circle())
-                    Text("BTC").fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
+                    Text("$").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 22, height: 22).background(Color.hex(0x2775ca)).clipShape(Circle())
+                    Text(DemoConfig.destinationCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
                 }
             }
             .padding(16)
             Text(quoteNote).font(.system(size: 13)).foregroundStyle(Color.hex(0x6b7280))
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 16).padding(.bottom, 10)
-            HStack {
-                Text("By ✦ Mercuryo").font(.system(size: 15)).foregroundStyle(Color.hex(0x15191f))
-                Spacer()
-                Text(rateText).font(.system(size: 14)).foregroundStyle(Color.hex(0x374151))
-            }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            .background(Color.hex(0xeceae5))
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.hex(0xd7d6d0)), alignment: .top)
         }
         .background(Color.hex(0xe6e5df)).clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - provider selection
+
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldLabel("Choose a provider")
+            if providers.isEmpty {
+                Text(quoteNote).font(.system(size: 14)).foregroundStyle(Color.hex(0x6b7280))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(providers) { providerRow($0) }
+            }
+        }
+    }
+
+    private func providerRow(_ quote: DemoQuote) -> some View {
+        let selected = quote.serviceProvider == selectedProvider
+        return Button {
+            select(quote)
+        } label: {
+            HStack(spacing: 11) {
+                Circle()
+                    .strokeBorder(selected ? Color.hex(0x3e6650) : Color.hex(0xb9b8b2), lineWidth: 2)
+                    .background(Circle().fill(selected ? Color.hex(0x3e6650) : .clear).padding(4))
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(quote.serviceProvider).fontWeight(.semibold).foregroundStyle(Color.hex(0x15191f))
+                    if let kyc = quote.kycMode {
+                        Text("KYC \(kyc)").font(.system(size: 12)).foregroundStyle(Color.hex(0x6b7280))
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("≈ \(quote.destinationAmount.map(format) ?? "—") \(DemoConfig.destinationCurrency)")
+                        .fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
+                    if let fee = quote.totalFee {
+                        Text("fee \(format(fee)) \(DemoConfig.sourceCurrency)")
+                            .font(.system(size: 12)).foregroundStyle(Color.hex(0x6b7280))
+                    }
+                }
+            }
+            .padding(14)
+            .background(selected ? Color.hex(0xeaf1ec) : Color.hex(0xf7f6f2))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12)
+                .stroke(selected ? Color.hex(0x3e6650) : Color.hex(0xd8d7d1), lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func select(_ quote: DemoQuote) {
+        selectedProvider = quote.serviceProvider
+        if let amount = quote.destinationAmount { receiveText = "≈ \(format(amount))" }
+        quoteNote = "via \(quote.serviceProvider)"
+            + (quote.totalFee.map { " — total fees \(format($0)) \(DemoConfig.sourceCurrency)" } ?? "")
     }
 
     // MARK: - fields
@@ -172,7 +226,7 @@ struct ContentView: View {
         Button {
             Task { await buy() }
         } label: {
-            Text(creating ? "Creating order…" : "Buy Bitcoin")
+            Text(creating ? "Creating order…" : "Buy \(DemoConfig.destinationCurrency)")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(buyDisabled ? Color.hex(0x9aa0a8) : .white)
                 .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -213,10 +267,15 @@ struct ContentView: View {
 
         clientIP = await orders.publicIP()
         do {
-            let quote = try await orders.quote()
-            if let amount = quote.destinationAmount { receiveText = "≈ \(format(amount))" }
-            if let fee = quote.totalFee { quoteNote = "live quote — total fees \(format(fee)) \(DemoConfig.sourceCurrency)" }
-            if let rate = quote.exchangeRate { rateText = "1 BTC ≈ \(Int(rate).formatted()) \(DemoConfig.sourceCurrency)" }
+            let fetched = try await orders.quotes()
+                .sorted { ($0.destinationAmount ?? 0) > ($1.destinationAmount ?? 0) }
+            providers = fetched
+            if let best = fetched.first {
+                select(best) // default to the strongest quote
+            } else {
+                receiveText = "≈ —"
+                quoteNote = "no providers available for this corridor"
+            }
         } catch {
             receiveText = "≈ —"
             quoteNote = "quote failed: \(error.localizedDescription)"
@@ -235,9 +294,11 @@ struct ContentView: View {
         }
         let customer = needsCustomerField ? customerId.trimmingCharacters(in: .whitespaces) : DemoConfig.meldCustomerId
         guard !customer.isEmpty else { errorText = "Set a Meld customer ID."; return }
+        guard let provider = selectedProvider else { errorText = "Pick a provider."; return }
 
         do {
             let orderJSON = try await orders.createOrder(
+                serviceProvider: provider,
                 customerId: customer,
                 wallet: wallet.trimmingCharacters(in: .whitespaces),
                 clientIP: clientIP)
@@ -248,7 +309,7 @@ struct ContentView: View {
                 return
             }
             events.clear()
-            presentedOrder = PresentedOrder(order: order)
+            presentedOrder = PresentedOrder(order: order, providerName: provider)
         } catch {
             errorText = error.localizedDescription
         }
@@ -266,6 +327,7 @@ struct ContentView: View {
 struct PresentedOrder: Identifiable {
     let id = UUID()
     let order: MeldOrder
+    let providerName: String
 }
 
 extension Color {

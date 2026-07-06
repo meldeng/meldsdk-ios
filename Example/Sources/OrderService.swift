@@ -22,12 +22,12 @@ enum DemoConfig {
 
     static let version = "2026-05-01"
 
-    // Fixed corridor for the demo: 15 USD -> BTC, US, Mercuryo card.
+    // Fixed corridor for the demo: 15 USD -> USDC, US, Uphold card.
     static let sourceAmount = "15"
     static let sourceCurrency = "USD"
-    static let destinationCurrency = "BTC"
+    static let destinationCurrency = "USDC"
     static let country = "US"
-    static let defaultWallet = "bc1qr74wmrcwqq9w5yxczxj6udts9mnqsh3xlhk5yp"
+    static let defaultWallet = "0x4838B106FCe9647Bdf1E7877BF73cE8B0BAD5f97"
 
     /// Resolve a credential: scheme env var first (handy for CI), then the value injected from
     /// Secrets.xcconfig via Info.plist. An empty or unresolved `$(...)` placeholder reads as "".
@@ -39,10 +39,13 @@ enum DemoConfig {
     }
 }
 
-struct DemoQuote {
+struct DemoQuote: Identifiable {
+    var id: String { serviceProvider }
+    let serviceProvider: String
     let destinationAmount: Double?
     let totalFee: Double?
     let exchangeRate: Double?
+    let kycMode: String?
 }
 
 // MARK: - Backend calls (in a real app, these live on your server)
@@ -62,33 +65,42 @@ struct OrderService {
         return nil
     }
 
-    /// `POST /payments/crypto/quote?integrationMode=HEADLESS` — the live quote for the corridor.
-    func quote() async throws -> DemoQuote {
-        let (data, _) = try await post("/payments/crypto/quote?integrationMode=HEADLESS", [
+    /// `POST /payments/crypto/quote?integrationMode=HEADLESS` — one quote per headless-capable provider
+    /// for the corridor (no `serviceProviders` filter), so the user can pick which provider to use.
+    func quotes() async throws -> [DemoQuote] {
+        // Headless providers that quote on-behalf-of a customer (e.g. Uphold) require the customer id
+        // on the quote itself, so the provider can resolve that customer's service-provider identity.
+        var body: [String: Any] = [
             "countryCode": DemoConfig.country,
             "sourceAmount": DemoConfig.sourceAmount,
             "sourceCurrencyCode": DemoConfig.sourceCurrency,
             "destinationCurrencyCode": DemoConfig.destinationCurrency,
             "paymentMethodType": "CREDIT_DEBIT_CARD",
-            "serviceProviders": ["MERCURYO"],
-        ])
+        ]
+        if !DemoConfig.meldCustomerId.isEmpty { body["customerId"] = DemoConfig.meldCustomerId }
+        let (data, _) = try await post("/payments/crypto/quote?integrationMode=HEADLESS", body)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let quote = (json?["quotes"] as? [[String: Any]])?.first else {
+        guard let rawQuotes = json?["quotes"] as? [[String: Any]], !rawQuotes.isEmpty else {
             throw demoError(json?["message"] as? String ?? "no quotes returned")
         }
-        return DemoQuote(
-            destinationAmount: quote["destinationAmount"] as? Double,
-            totalFee: quote["totalFee"] as? Double,
-            exchangeRate: quote["exchangeRate"] as? Double)
+        return rawQuotes.compactMap { quote in
+            guard let provider = quote["serviceProvider"] as? String else { return nil }
+            return DemoQuote(
+                serviceProvider: provider,
+                destinationAmount: quote["destinationAmount"] as? Double,
+                totalFee: quote["totalFee"] as? Double,
+                exchangeRate: quote["exchangeRate"] as? Double,
+                kycMode: quote["kycMode"] as? String)
+        }
     }
 
-    /// `POST /crypto/order/headless` — returns the raw order JSON to hand to `MeldOrder.from`.
-    func createOrder(customerId: String, wallet: String, clientIP: String?) async throws -> Data {
+    /// `POST /crypto/order/headless/onramp` — returns the raw order JSON to hand to `MeldOrder.from`.
+    /// `serviceProvider` is whichever quote the user selected.
+    func createOrder(serviceProvider: String, customerId: String, wallet: String, clientIP: String?) async throws -> Data {
         var body: [String: Any] = [
             "customerId": customerId,
             "externalOrderId": "ios-demo-\(Int(Date().timeIntervalSince1970 * 1000))",
-            "sessionType": "BUY",
-            "serviceProvider": "MERCURYO",
+            "serviceProvider": serviceProvider,
             "paymentMethodType": "CREDIT_DEBIT_CARD",
             "sourceCurrencyCode": DemoConfig.sourceCurrency,
             "sourceAmount": DemoConfig.sourceAmount,
@@ -98,7 +110,7 @@ struct OrderService {
         ]
         if let clientIP { body["clientIpAddress"] = clientIP }
 
-        let (data, http) = try await post("/crypto/order/headless", body)
+        let (data, http) = try await post("/crypto/order/headless/onramp", body)
         guard (200..<300).contains(http.statusCode) else { // headless order returns 201 Created
             let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let code = info?["code"] as? String ?? String(http.statusCode)

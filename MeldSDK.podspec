@@ -17,5 +17,10 @@ Pod::Spec.new do |s|
   s.swift_version    = '5.9'
 
   s.source_files     = 'Sources/MeldSDK/**/*.swift'
+  # Vendored Uphold Enterprise Payment Widget web SDK (ESM-only upstream, bundled to an IIFE) run inside
+  # the WebView to mount the Uphold card widget. Packaged as a resource bundle so CocoaPods consumers
+  # (incl. the React Native wrapper) ship it; loaded via Bundle.meldResources (SPM Bundle.module vs a
+  # Bundle(for:)-located MeldSDK.bundle under Pods).
+  s.resource_bundles = { 'MeldSDK' => ['Sources/MeldSDK/Resources/*.js'] }
   s.frameworks       = 'UIKit', 'WebKit'
 end
