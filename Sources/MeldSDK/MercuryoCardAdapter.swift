@@ -13,7 +13,10 @@ struct MercuryoCardAdapter: MeldAdapter {
     let label = "Mercuryo card (CREDIT_DEBIT_CARD / IFRAME)"
     let capabilities = MeldCapabilities(embeddable: true, surface: "embedded", requiresUserGesture: false)
 
-    func matches(paymentMethodType: String?, renderMode: String?) -> Bool {
+    // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order. Provider-specific
+    // IFRAME adapters (e.g. Uphold) are registered ahead of this one and host-gate on widgetUrl, so
+    // only non-provider-specific IFRAME card orders fall through to Mercuryo.
+    func matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?) -> Bool {
         paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME"
     }
 

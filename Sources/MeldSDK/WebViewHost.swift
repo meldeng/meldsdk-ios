@@ -13,6 +13,11 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     private let orderId: String?
     private let handlers: MeldEventHandlers
     private let interpret: ([String: Any]) -> [MeldEvent]
+    // When set, the WebView loads this HTML (with `url` as the base URL/origin) instead of navigating
+    // to `url`. Used to run a provider's own web SDK inside the WebView — e.g. Uphold, whose widget is
+    // mounted via PaymentWidget(session) rather than loaded as a page. The bootstrap must post
+    // lifecycle events through window.meldSendToNativeApp (the injected bridge).
+    private let htmlContent: String?
     // Origins ("https://host") whose window.postMessage events the bridge trusts. The widget's own
     // origin is always included; an adapter may add the provider's other origins. An empty set
     // means "trust any origin" — only as a last resort, never for an embedded provider widget.
@@ -22,10 +27,12 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
 
     init(url: URL, orderId: String?, handlers: MeldEventHandlers,
          allowedOrigins: Set<String> = [],
+         htmlContent: String? = nil,
          interpret: @escaping ([String: Any]) -> [MeldEvent]) {
         self.url = url
         self.orderId = orderId
         self.handlers = handlers
+        self.htmlContent = htmlContent
         self.interpret = interpret
         // Always trust the loaded page's own origin; the adapter's set widens it to sibling
         // provider origins (widget vs. exchange host, etc.).
@@ -60,7 +67,13 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
             webView.leadingAnchor.constraint(equalTo: host.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: host.trailingAnchor),
         ])
-        webView.load(URLRequest(url: url))
+        if let htmlContent {
+            // `url` is the base URL: it sets the page origin so the provider SDK's iframe is
+            // same-origin with the widget host.
+            webView.loadHTMLString(htmlContent, baseURL: url)
+        } else {
+            webView.load(URLRequest(url: url))
+        }
         self.webView = webView
     }
 
@@ -100,6 +113,19 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == Self.bridgeName else { return }
+        // Enforce the posting frame's origin natively. window.webkit.messageHandlers.meld is reachable from
+        // EVERY frame (main + subframes) and the bridge script is injected forMainFrameOnly:false, so the
+        // JS-level origin filter alone can't stop a cross-origin 3DS/ACS subframe from calling the handler
+        // directly. The threat is a hostile SUBFRAME: the main frame is our own bootstrap (loaded from the
+        // trusted baseURL / widget origin), so it's trusted by construction — accepting it also avoids
+        // dropping every message if a WebKit version reports an opaque securityOrigin for a loadHTMLString
+        // main frame. For subframes we require the frame's securityOrigin to be allowlisted, so a forged
+        // 'complete' (+attacker card id) from a 3DS/ACS frame is rejected. Empty allowlist = trust any.
+        if !allowedOrigins.isEmpty, !message.frameInfo.isMainFrame,
+            !isAllowedOrigin(message.frameInfo.securityOrigin) {
+            Self.log.debug("dropped bridge message from untrusted subframe origin")
+            return
+        }
         // Each message arrives wrapped as { kind: "message", data: <provider event> }.
         guard let wrapper = message.body as? [String: Any],
               let providerMessage = wrapper["data"] as? [String: Any]
@@ -143,6 +169,13 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     private static func origin(of url: URL) -> String? {
         guard let scheme = url.scheme, let host = url.host else { return nil }
         return "\(scheme)://\(host)"
+    }
+
+    /// Whether a posting frame's WebKit security origin is in `allowedOrigins`, compared as
+    /// "scheme://host" to match how the allowlist is stored (port ignored, matching that format).
+    private func isAllowedOrigin(_ origin: WKSecurityOrigin) -> Bool {
+        guard !origin.host.isEmpty else { return false }
+        return allowedOrigins.contains("\(origin.`protocol`)://\(origin.host)")
     }
 
     // MARK: - Injected bridge

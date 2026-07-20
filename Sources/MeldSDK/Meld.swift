@@ -134,16 +134,22 @@ public enum MeldMountError: LocalizedError {
 }
 
 /// Handle returned by `mount` — call `unmount()` on teardown (navigation, dismissal).
+///
+/// The handle STRONGLY owns the provider session: it is the mounted widget's lifecycle owner, so the
+/// session must live exactly as long as the integrator keeps the handle. A weak reference would let a
+/// session that isn't itself retained by the view tree deallocate immediately after `mount` returns —
+/// which is fatal for multi-step providers (e.g. Uphold), whose orchestrating session object owns the
+/// WebView(s) rather than being one. No retain cycle exists: a session never references its handle.
 public final class MeldWidgetHandle {
     public let mode: String
-    private weak var session: MeldProviderSession?
+    private let session: MeldProviderSession
 
     init(mode: String, session: MeldProviderSession) {
         self.mode = mode
         self.session = session
     }
 
-    public func unmount() { session?.unmount() }
+    public func unmount() { session.unmount() }
 }
 
 public enum Meld {
@@ -153,6 +159,9 @@ public enum Meld {
     // (paymentMethodType, renderMode); first match wins. Supporting a new provider is a new
     // entry here, never a change to the public API or the generic widget host.
     static let adapters: [MeldAdapter] = [
+        // Provider-specific IFRAME adapters first (they host-gate on widgetUrl); the generic
+        // Mercuryo IFRAME-card adapter is the catch-all and must stay last.
+        UpholdCardAdapter(),
         MercuryoCardAdapter(),
     ]
 
@@ -190,6 +199,9 @@ public enum Meld {
     /// First registered adapter that handles the order, or nil if none do.
     static func adapter(for order: MeldOrder) -> MeldAdapter? {
         let mode = order.paymentMethodResponseDetails?.renderMode
-        return adapters.first { $0.matches(paymentMethodType: order.paymentMethodType, renderMode: mode) }
+        let widgetUrl = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl
+        return adapters.first {
+            $0.matches(paymentMethodType: order.paymentMethodType, renderMode: mode, widgetUrl: widgetUrl)
+        }
     }
 }

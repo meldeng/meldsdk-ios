@@ -11,6 +11,7 @@ import MeldSDK
 /// Full-screen sheet hosting the provider widget, with a status banner + event log underneath.
 struct WidgetScreen: View {
     let order: MeldOrder
+    let providerName: String
     @ObservedObject var events: EventLog
     let onClose: () -> Void
 
@@ -27,7 +28,7 @@ struct WidgetScreen: View {
                 .background(.thinMaterial)
             }
             .ignoresSafeArea(edges: .bottom)
-            .navigationTitle("Mercuryo")
+            .navigationTitle(providerName.capitalized)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Back", action: onClose) }
