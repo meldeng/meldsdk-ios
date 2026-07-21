@@ -36,7 +36,20 @@ jobs:
         env:
           COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
           POD_VERSION: ${{ steps.version.outputs.value }}
-        run: pod trunk push MeldSDK.podspec --allow-warnings
+        # CocoaPods trunk is flaky: it sometimes returns a 500 *after* accepting the pod, and a
+        # re-run then reports "duplicate entry". Both mean the version is actually live — so treat
+        # them as success, and verify against trunk before failing for real (keeps re-runs green).
+        run: |
+          set +e
+          OUT=$(pod trunk push MeldSDK.podspec --allow-warnings 2>&1); CODE=$?
+          echo "$OUT"
+          [ $CODE -eq 0 ] && exit 0
+          echo "$OUT" | grep -qiE "duplicate entry|already been pushed|already exists" && {
+            echo "::notice::${POD_VERSION} already on trunk — treating as success."; exit 0; }
+          if pod trunk info MeldSDK 2>/dev/null | grep -q -- "- ${POD_VERSION} "; then
+            echo "::notice::trunk push errored but ${POD_VERSION} is registered — treating as success."; exit 0
+          fi
+          echo "::error::trunk push failed and ${POD_VERSION} is not on trunk."; exit $CODE
 
       - name: Create GitHub Release
         env:
