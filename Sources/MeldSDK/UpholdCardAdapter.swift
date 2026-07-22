@@ -57,18 +57,32 @@ struct UpholdCardAdapter: MeldAdapter {
             orderId: order.id,
             bundle: bundle,
             authorizeSessionUrl: authorizeSessionUrl,
-            continuationToken: continuationToken)
+            continuationToken: continuationToken,
+            paymentMethodType: order.paymentMethodType)
         session.mountCapture(sessionUrl: sessionUrl, token: sessionToken, flow: sessionFlow)
         return session
     }
 
     // MARK: - Bootstrap that runs Uphold's web SDK inside the WebView
 
+    /// Map the Meld order's paymentMethodType to Uphold's widget `paymentMethods` config so the widget
+    /// preselects it and skips the "Select a payment method" screen. Card-family Meld types map to
+    /// Uphold's `card`; anything we can't confidently map falls back to the full picker (card + crypto).
+    static func upholdPaymentMethodsJs(for paymentMethodType: String?) -> String {
+        switch paymentMethodType?.uppercased() {
+        case "CREDIT_DEBIT_CARD", "CREDIT_CARD", "DEBIT_CARD", "CARD":
+            return "[{type:'card'}]"
+        default:
+            return "[{type:'card'},{type:'crypto'}]"
+        }
+    }
+
     /// HTML that loads the vendored Uphold web SDK, mounts `PaymentWidget(session)`, and relays its
     /// lifecycle events to native through `window.meldSendToNativeApp` in the normalized shape the
     /// event mappers below expect (`{type, value|detail}`).
     static func bootstrapHtml(
-        bundleJs: String, sessionUrl: String, token: String, flow: String?, data: [String: Any]? = nil
+        bundleJs: String, sessionUrl: String, token: String, flow: String?, data: [String: Any]? = nil,
+        paymentMethodsJs: String = "[{type:'card'},{type:'crypto'}]"
     ) -> String {
         var session: [String: Any] = ["url": sessionUrl, "token": token]
         if let flow { session["flow"] = flow }
@@ -92,7 +106,7 @@ struct UpholdCardAdapter: MeldAdapter {
           try {
             var W = window.MeldUpholdWidget && window.MeldUpholdWidget.PaymentWidget;
             if(!W){ post({type:'error',detail:{error:{code:'sdk_unavailable',message:'Uphold widget SDK failed to load'}}}); return; }
-            var widget = new W(\(sessionJSON), { paymentMethods:[{type:'card'},{type:'crypto'}], theme:{appearance:'light'} });
+            var widget = new W(\(sessionJSON), { paymentMethods:\(paymentMethodsJs), theme:{appearance:'light'} });
             widget.on('ready', function(){ post({type:'ready'}); });
             widget.on('complete', function(e){ post({type:'complete', value:(e&&e.detail)?e.detail.value:null}); });
             widget.on('cancel', function(){ post({type:'cancel'}); });
@@ -233,6 +247,9 @@ private final class UpholdTwoStepSession: MeldProviderSession {
     private let bundle: String
     private let authorizeSessionUrl: String
     private let continuationToken: String?
+    /// Uphold widget `paymentMethods` config derived from the Meld order's paymentMethodType, so the
+    /// widget preselects the method (skipping its "Select a payment method" screen) when we can map it.
+    private let paymentMethodsJs: String
 
     private var current: MeldProviderSession?
     private var advancing = false
@@ -254,17 +271,19 @@ private final class UpholdTwoStepSession: MeldProviderSession {
     )
 
     init(host: UIView, handlers: MeldEventHandlers, orderId: String?, bundle: String,
-         authorizeSessionUrl: String, continuationToken: String?) {
+         authorizeSessionUrl: String, continuationToken: String?, paymentMethodType: String?) {
         self.host = host
         self.handlers = handlers
         self.orderId = orderId
         self.bundle = bundle
         self.authorizeSessionUrl = authorizeSessionUrl
         self.continuationToken = continuationToken
+        self.paymentMethodsJs = UpholdCardAdapter.upholdPaymentMethodsJs(for: paymentMethodType)
     }
 
     func mountCapture(sessionUrl: String, token: String, flow: String?) {
-        let html = UpholdCardAdapter.bootstrapHtml(bundleJs: bundle, sessionUrl: sessionUrl, token: token, flow: flow)
+        let html = UpholdCardAdapter.bootstrapHtml(
+            bundleJs: bundle, sessionUrl: sessionUrl, token: token, flow: flow, paymentMethodsJs: paymentMethodsJs)
         let capture = WebViewHost(
             url: UpholdCardAdapter.widgetOrigin(),
             orderId: orderId,
@@ -317,7 +336,8 @@ private final class UpholdTwoStepSession: MeldProviderSession {
         let data = details?["sdkSessionData"] as? [String: Any]
         current?.unmount()
         let html = UpholdCardAdapter.bootstrapHtml(
-            bundleJs: bundle, sessionUrl: sessionUrl, token: token, flow: flow, data: data)
+            bundleJs: bundle, sessionUrl: sessionUrl, token: token, flow: flow, data: data,
+            paymentMethodsJs: paymentMethodsJs)
         let authorize = WebViewHost(
             url: UpholdCardAdapter.widgetOrigin(),
             orderId: orderId,
