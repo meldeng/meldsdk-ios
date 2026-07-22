@@ -80,7 +80,14 @@ struct WidgetContainer: UIViewRepresentable {
         func eventHandlers() -> MeldEventHandlers {
             MeldEventHandlers(
                 onReady: { _ in self.events.record("onReady") },
-                onPaymentSubmitted: { _ in self.events.record("onPaymentSubmitted (UX hint, not settled)") },
+                onPaymentSubmitted: { _ in
+                    self.events.record("onPaymentSubmitted (UX hint, not settled)")
+                    // demo: the widget's job ends at submit — settlement is confirmed server-side via
+                    // webhook, and providers (e.g. Uphold) leave their own "processing" screen up with no
+                    // further widget event. So dismiss the web view here rather than stranding the user on
+                    // it. A real app would now show its OWN "settling…" UX driven by its backend.
+                    self.finish("payment submitted — settling server-side")
+                },
                 onStatusChange: { e in
                     self.events.setStatus(e.status)
                     self.events.record("onStatusChange: \(e.status.rawValue) (\(e.providerStatus ?? "-"))")
