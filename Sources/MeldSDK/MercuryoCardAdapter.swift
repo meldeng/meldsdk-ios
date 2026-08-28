@@ -13,14 +13,17 @@ struct MercuryoCardAdapter: MeldAdapter {
     let label = "Mercuryo card (CREDIT_DEBIT_CARD / IFRAME)"
     let capabilities = MeldCapabilities(embeddable: true, surface: "embedded", requiresUserGesture: false)
 
-    // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order. Provider-specific
-    // IFRAME adapters (e.g. Uphold) are registered ahead of this one and host-gate on widgetUrl, so
-    // only non-provider-specific IFRAME card orders fall through to Mercuryo.
-    func matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?) -> Bool {
-        paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME"
+    // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order that a
+    // provider-specific card adapter registered ahead of it has not claimed.
+    func matches(_ order: MeldOrder) -> Bool {
+        order.paymentMethodType == "CREDIT_DEBIT_CARD"
+            && order.paymentMethodResponseDetails?.renderMode == "IFRAME"
     }
 
-    func mount(order: MeldOrder, into host: UIView, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+    func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+        guard let host = context.host else {
+            throw MeldMountError.missingHost(label)
+        }
         guard let urlString = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl,
               let url = URL(string: urlString) else {
             throw MeldMountError.missingWidgetURL

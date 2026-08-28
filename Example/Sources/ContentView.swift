@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var quoteNote = "fetching live quotes…"
     @State private var errorText = ""
     @State private var creating = false
+    @State private var method: DemoPaymentMethod = .card
     @State private var presentedOrder: PresentedOrder?
     @State private var providers: [DemoQuote] = []
     @State private var selectedProvider: String?
@@ -34,7 +35,12 @@ struct ContentView: View {
         }
         .task { await load() }
         .fullScreenCover(item: $presentedOrder) { presented in
-            WidgetScreen(order: presented.order, providerName: presented.providerName, events: events) {
+            WidgetScreen(
+                order: presented.order,
+                providerName: presented.providerName,
+                applePay: presented.applePay,
+                events: events
+            ) {
                 presentedOrder = nil
             }
         }
@@ -53,7 +59,7 @@ struct ContentView: View {
                 field($customerId, placeholder: "customer with APPROVED KYC")
             }
             fieldLabel("Payment Method")
-            methodBox
+            methodPicker
             buyButton
             if !errorText.isEmpty {
                 Text(errorText).font(.footnote).foregroundStyle(Color.hex(0xb3261e))
@@ -76,7 +82,7 @@ struct ContentView: View {
                 .padding(.horizontal, 24).padding(.vertical, 7)
                 .background(Color.hex(0x3e6650)).clipShape(RoundedRectangle(cornerRadius: 10))
             Spacer()
-            HStack(spacing: 6) { Text("🇺🇸"); Text("US").foregroundStyle(Color.hex(0x15191f)) }
+            HStack(spacing: 6) { Text(DemoConfig.countryFlag); Text(DemoConfig.country).foregroundStyle(Color.hex(0x15191f)) }
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(.white).clipShape(RoundedRectangle(cornerRadius: 10))
         }
@@ -92,7 +98,7 @@ struct ContentView: View {
                     Text(DemoConfig.sourceAmount).font(.system(size: 38, weight: .bold)).foregroundStyle(Color.hex(0x15191f))
                 }
                 Spacer()
-                chip { Text("🇺🇸"); Text(DemoConfig.sourceCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f)) }
+                chip { Text(DemoConfig.countryFlag); Text(DemoConfig.sourceCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f)) }
             }
             .padding(16)
             presetsRow
@@ -124,8 +130,13 @@ struct ContentView: View {
                 }
                 Spacer()
                 chip {
-                    Text("$").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                        .frame(width: 22, height: 22).background(Color.hex(0x2775ca)).clipShape(Circle())
+                    // Corridor is configurable (DemoConfig), so the chip follows it instead of
+                    // hardcoding one asset's glyph and brand colour.
+                    Text(DemoConfig.destinationCurrency == "BTC" ? "₿" : "$")
+                        .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Color.hex(DemoConfig.destinationCurrency == "BTC" ? 0xf7931a : 0x2775ca))
+                        .clipShape(Circle())
                     Text(DemoConfig.destinationCurrency).fontWeight(.bold).foregroundStyle(Color.hex(0x15191f))
                 }
             }
@@ -210,16 +221,23 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.hex(0xd8d7d1), lineWidth: 1.5))
     }
 
-    private var methodBox: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "creditcard").foregroundStyle(Color.hex(0x15191f))
-            Text("Credit or debit card").foregroundStyle(Color.hex(0x15191f))
-            Spacer()
+    private var methodPicker: some View {
+        HStack(spacing: 8) {
+            ForEach(DemoPaymentMethod.allCases) { m in
+                Button { method = m } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: m.icon)
+                        Text(m.title)
+                    }
+                    .font(.system(size: 15, weight: method == m ? .semibold : .regular))
+                    .foregroundStyle(method == m ? .white : Color.hex(0x15191f))
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
+                    .background(method == m ? Color.hex(0x15191f) : Color.hex(0xf7f6f2))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.hex(0xd8d7d1), lineWidth: 1.5))
+                }
+            }
         }
-        .padding(14)
-        .background(Color.hex(0xf7f6f2))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.hex(0xd8d7d1), lineWidth: 1.5))
     }
 
     private var buyButton: some View {
@@ -296,20 +314,62 @@ struct ContentView: View {
         guard !customer.isEmpty else { errorText = "Set a Meld customer ID."; return }
         guard let provider = selectedProvider else { errorText = "Pick a provider."; return }
 
+        let trimmedWallet = wallet.trimmingCharacters(in: .whitespaces)
         do {
             let orderJSON = try await orders.createOrder(
                 serviceProvider: provider,
                 customerId: customer,
-                wallet: wallet.trimmingCharacters(in: .whitespaces),
-                clientIP: clientIP)
+                wallet: trimmedWallet,
+                clientIP: clientIP,
+                paymentMethodType: method.paymentMethodType)
 
-            let order = try MeldOrder.from(jsonData: orderJSON)   // SDK: decode the order
-            guard Meld.capabilities(for: order).embeddable else { // SDK: can we embed it?
-                errorText = "Order is not embeddable by this SDK (renderMode != IFRAME)."
-                return
+            // demo-only: until the backend surfaces merchantIdentifier on Apple Pay orders, inject
+            // the entitlement's merchant id so the Simulator sheet can present (no-op for card).
+            let orderData = method == .applePay
+                ? OrderService.injectingMerchantIdIfMissing(orderJSON, DemoConfig.applePayMerchantId)
+                : orderJSON
+
+            let order = try MeldOrder.from(jsonData: orderData)   // SDK: decode the order
+            let caps = Meld.capabilities(for: order)              // SDK: what surface is it?
+
+            switch method {
+            case .card:
+                guard caps.embeddable else {
+                    errorText = "Order is not embeddable by this SDK (renderMode != IFRAME)."
+                    return
+                }
+                events.clear()
+                presentedOrder = PresentedOrder(order: order, providerName: provider, applePay: nil)
+
+            case .applePay:
+                // Deliberately NOT gated on `caps.surface`: an Apple Pay order may be a native
+                // PassKit sheet OR a provider-hosted page, and which one is the SDK's business.
+                // Build the request either way — it is ignored by the surfaces that don't need it.
+                guard Meld.canPresentApplePay() else { // SDK: device/user can pay?
+                    errorText = "Apple Pay isn't available. On the Simulator, add a test card in Wallet "
+                        + "(Features ▸ Add Test Card / Wallet settings)."
+                    return
+                }
+                guard let ip = clientIP, !ip.isEmpty else {
+                    errorText = "Apple Pay needs the device's public IP (couldn't resolve it)."
+                    return
+                }
+                guard let amount = Decimal(string: DemoConfig.sourceAmount) else {
+                    errorText = "Invalid amount."
+                    return
+                }
+                // The order carries merchantIdentifier/sessionToken/merchantTransactionId; this
+                // request supplies what it doesn't (amount/currency/country/wallet/IP).
+                // Note: merchant country / networks are provider-fixed (Mercuryo), not set here.
+                let request = MeldApplePayRequest(
+                    amount: amount,
+                    currencyCode: DemoConfig.sourceCurrency,
+                    walletAddress: trimmedWallet,
+                    clientIpAddress: ip,
+                    summaryItemLabel: "Meld Demo — Buy \(DemoConfig.destinationCurrency)")
+                events.clear()
+                presentedOrder = PresentedOrder(order: order, providerName: provider, applePay: request)
             }
-            events.clear()
-            presentedOrder = PresentedOrder(order: order, providerName: provider)
         } catch {
             errorText = error.localizedDescription
         }
@@ -323,11 +383,24 @@ struct ContentView: View {
     }
 }
 
-/// A decoded order ready to present in the widget sheet.
+/// A decoded order ready to present. `applePay` is non-nil for an Apple Pay order (carrying the
+/// inputs the sheet needs), nil for the embedded card widget.
 struct PresentedOrder: Identifiable {
     let id = UUID()
     let order: MeldOrder
     let providerName: String
+    let applePay: MeldApplePayRequest?
+}
+
+/// The two surfaces this demo can drive through `Meld.mount`.
+enum DemoPaymentMethod: String, CaseIterable, Identifiable {
+    case card
+    case applePay
+
+    var id: String { rawValue }
+    var title: String { self == .card ? "Card" : "Apple Pay" }
+    var icon: String { self == .card ? "creditcard" : "applelogo" }
+    var paymentMethodType: String { self == .card ? "CREDIT_DEBIT_CARD" : "APPLE_PAY" }
 }
 
 extension Color {

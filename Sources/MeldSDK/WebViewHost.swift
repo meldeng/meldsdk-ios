@@ -8,7 +8,9 @@ import WebKit
 // events to the Meld handlers. It carries no provider-specific knowledge — an adapter supplies
 // the URL, the allowed message origins, and the message mapping. Reusable by any URL-rendered
 // provider widget.
-final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler, MeldProviderSession {
+final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler,
+    MeldProviderSession
+{
     private let url: URL
     private let orderId: String?
     private let handlers: MeldEventHandlers
@@ -22,17 +24,41 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     // origin is always included; an adapter may add the provider's other origins. An empty set
     // means "trust any origin" — only as a last resort, never for an embedded provider widget.
     private let allowedOrigins: Set<String>
+    // Extra native handler names to register alongside the injected bridge, for providers whose
+    // page posts straight to `window.webkit.messageHandlers.<name>` rather than window.postMessage
+    // (Coinbase's `cbOnramp`). Their payloads arrive verbatim and are handed to `interpret`
+    // wrapped as ["handler": name, "body": <payload>].
+    private let nativeMessageHandlers: Set<String>
+    // Hosts the MAIN FRAME may navigate to. Non-empty turns on navigation gating: off-host
+    // main-frame loads and popups are cancelled, and user-activated https links open in the
+    // system browser instead. Subframes are unaffected — providers legitimately load third-party
+    // resources in them. Empty = no gating (the pre-existing behaviour).
+    private let mainFrameHosts: Set<String>
+    private let userScripts: [WKUserScript]
+    // Whether finishing navigation counts as "ready". True for a surface whose page IS the widget.
+    // False when the provider emits its own ready signal: reporting ready at page load would tell a
+    // host the surface is usable before the provider has wired it up, and would cancel any
+    // load-timeout the host runs against exactly that failure.
+    private let firesReadyOnNavigation: Bool
     private weak var webView: WKWebView?
     private var didFireReady = false
 
     init(url: URL, orderId: String?, handlers: MeldEventHandlers,
          allowedOrigins: Set<String> = [],
          htmlContent: String? = nil,
+         nativeMessageHandlers: Set<String> = [],
+         mainFrameHosts: Set<String> = [],
+         userScripts: [WKUserScript] = [],
+         firesReadyOnNavigation: Bool = true,
          interpret: @escaping ([String: Any]) -> [MeldEvent]) {
         self.url = url
         self.orderId = orderId
         self.handlers = handlers
         self.htmlContent = htmlContent
+        self.nativeMessageHandlers = nativeMessageHandlers
+        self.mainFrameHosts = mainFrameHosts
+        self.userScripts = userScripts
+        self.firesReadyOnNavigation = firesReadyOnNavigation
         self.interpret = interpret
         // Always trust the loaded page's own origin; the adapter's set widens it to sibling
         // provider origins (widget vs. exchange host, etc.).
@@ -51,6 +77,12 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
         userContent.add(self, name: Self.bridgeName)
         userContent.addUserScript(
             WKUserScript(source: bridgeScript(), injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        for name in nativeMessageHandlers {
+            userContent.add(self, name: name)
+        }
+        for script in userScripts {
+            userContent.addUserScript(script)
+        }
 
         let config = WKWebViewConfiguration()
         config.userContentController = userContent
@@ -59,6 +91,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
 
         let webView = WKWebView(frame: host.bounds, configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(webView)
         NSLayoutConstraint.activate([
@@ -80,8 +113,12 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     func unmount() {
         guard let webView else { return }
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Self.bridgeName)
+        for name in nativeMessageHandlers {
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
+        }
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
         webView.removeFromSuperview()
         self.webView = nil
     }
@@ -89,7 +126,10 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     // MARK: - WKNavigationDelegate (ready / load failures)
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Page loaded; a provider's own ready event (if any) also fires this — whichever first.
+        // Page loaded. For a surface whose page IS the widget this is "ready"; where the provider
+        // emits its own signal the adapter opts out, so a page that loads but never initialises
+        // still looks unready to the host.
+        guard firesReadyOnNavigation else { return }
         fireReadyOnce()
     }
 
@@ -112,6 +152,10 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     // MARK: - WKScriptMessageHandler (window messages -> interpret -> Meld events)
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if nativeMessageHandlers.contains(message.name) {
+            receiveNativeHandlerMessage(message)
+            return
+        }
         guard message.name == Self.bridgeName else { return }
         // Enforce the posting frame's origin natively. window.webkit.messageHandlers.meld is reachable from
         // EVERY frame (main + subframes) and the bridge script is injected forMainFrameOnly:false, so the
@@ -137,6 +181,97 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
         for event in interpret(providerMessage) {
             dispatch(event)
         }
+    }
+
+    /// A message posted straight to a provider's own native handler (not through the injected
+    /// bridge). The posting frame's origin is enforced natively here for the same reason as the
+    /// bridge: the handler is reachable from every frame.
+    private func receiveNativeHandlerMessage(_ message: WKScriptMessage) {
+        if !isTrustedMessageOrigin(message.frameInfo.securityOrigin) {
+            Self.log.debug("dropped native-handler message from untrusted origin")
+            return
+        }
+        for event in interpret(["handler": message.name, "body": message.body]) {
+            dispatch(event)
+        }
+    }
+
+    /// Runs JavaScript in the hosted page. Only for adapters whose provider protocol requires it
+    /// (e.g. clicking the provider's own Apple Pay button so the sheet opens without an extra tap).
+    ///
+    /// Refuses unless the page currently loaded is on an allowed main-frame host, so injection can
+    /// never reach a page the provider navigated away to. Requires `mainFrameHosts` to be set —
+    /// without that pin there is nothing to verify against.
+    func evaluateJavaScript(_ script: String) {
+        guard !mainFrameHosts.isEmpty,
+              let current = webView?.url,
+              current.scheme?.lowercased() == "https",
+              isAllowedMainFrameHost(current.host)
+        else {
+            Self.log.debug("refused to evaluate script: current page is not an allowed host")
+            return
+        }
+        webView?.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    // MARK: - Navigation gating (opt-in via `mainFrameHosts`)
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard !mainFrameHosts.isEmpty else { return decisionHandler(.allow) }
+        guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
+
+        // Popups (window.open / target=_blank) are cancelled HERE rather than left to the
+        // WKUIDelegate: this delegate runs first, and allowing the navigation swaps the main
+        // frame's `url` to the popup target even when `createWebViewWith` loads nothing.
+        // Cancelling also stops that callback firing, so a link cannot open twice.
+        if navigationAction.targetFrame == nil {
+            decisionHandler(.cancel)
+            openUserActivatedHttpsUrl(url, navigationType: navigationAction.navigationType)
+            return
+        }
+
+        // Providers legitimately load third-party resources in subframes; only the visible
+        // main-frame document is pinned.
+        guard navigationAction.targetFrame?.isMainFrame ?? true else { return decisionHandler(.allow) }
+
+        guard url.scheme?.lowercased() == "https", isAllowedMainFrameHost(url.host) else {
+            decisionHandler(.cancel)
+            openUserActivatedHttpsUrl(url, navigationType: navigationAction.navigationType)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        // Fallback only — the policy delegate above cancels popups before WebKit gets here.
+        // Keeps the live checkout in place and sends user-opened legal/help links to the browser.
+        if !mainFrameHosts.isEmpty, let url = navigationAction.request.url {
+            openUserActivatedHttpsUrl(url, navigationType: navigationAction.navigationType)
+        }
+        return nil
+    }
+
+    /// Opens a link the USER activated in the system browser. Script-created navigations and
+    /// non-https URLs are dropped, so a compromised page cannot make the app open arbitrary URLs.
+    private func openUserActivatedHttpsUrl(_ url: URL, navigationType: WKNavigationType) {
+        guard navigationType == .linkActivated, url.scheme?.lowercased() == "https" else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// Host-suffix match so a provider's subdomains stay in-frame ("pay.coinbase.com" against
+    /// "coinbase.com") without admitting a lookalike ("evilcoinbase.com").
+    private func isAllowedMainFrameHost(_ rawHost: String?) -> Bool {
+        guard let host = rawHost?.lowercased() else { return false }
+        return mainFrameHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
     }
 
     private func dispatch(_ event: MeldEvent) {
@@ -169,6 +304,16 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKScriptMessageHandler,
     private static func origin(of url: URL) -> String? {
         guard let scheme = url.scheme, let host = url.host else { return nil }
         return "\(scheme)://\(host)"
+    }
+
+    /// Whether a native-handler message may be trusted: the exact origin allowlist, OR any host the
+    /// main frame is permitted to navigate to. A provider that moves between its own subdomains
+    /// mid-checkout keeps posting events, instead of having them silently dropped — which would
+    /// strand the host on a surface that never reports anything again.
+    private func isTrustedMessageOrigin(_ origin: WKSecurityOrigin) -> Bool {
+        if allowedOrigins.isEmpty, mainFrameHosts.isEmpty { return true }
+        if isAllowedOrigin(origin) { return true }
+        return origin.`protocol`.lowercased() == "https" && isAllowedMainFrameHost(origin.host)
     }
 
     /// Whether a posting frame's WebKit security origin is in `allowedOrigins`, compared as

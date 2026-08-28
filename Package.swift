@@ -15,5 +15,6 @@ let package = Package(
             // self-contained IIFE and run inside the WebView to mount the Uphold card widget.
             resources: [.copy("Resources/uphold-payment-widget.bundle.js")]
         ),
+        .testTarget(name: "MeldSDKTests", dependencies: ["MeldSDK"], path: "Tests/MeldSDKTests"),
     ]
 )
