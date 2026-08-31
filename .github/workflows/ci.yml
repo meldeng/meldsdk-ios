@@ -1,0 +1,78 @@
+name: CI
+
+# The SDK had no CI: its tests only ever ran on whoever's laptop last remembered to run them,
+# and the podspec was validated for the first time during `pod trunk push` — i.e. after the tag
+# was already pushed and the SPM release already existed. Both now run on every PR.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test (iOS Simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinning a device name breaks whenever the runner image drops that model, so take whatever
+      # iPhone the image actually has. `swift test` is not an option here: the SDK imports UIKit,
+      # which does not exist on the macOS target SwiftPM defaults to.
+      - name: Pick a simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; ds=json.load(sys.stdin)['devices']; print(next(d['udid'] for rt in sorted(ds) if 'iOS' in rt for d in ds[rt] if d.get('isAvailable') and 'iPhone' in d['name']))")
+          [ -n "$udid" ] || { echo "::error::no iPhone simulator on this runner"; exit 1; }
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices | grep -F "$udid"
+
+      # No log formatter: xcbeautify/xcpretty are not guaranteed on the runner image, and a CI
+      # that fails because its pretty-printer is missing is worse than verbose output. Full log is
+      # kept as an artifact; the summary lines are echoed for the common case.
+      - name: Test
+        run: |
+          # Deliberately not -e: we need the exit status to survive so the failure excerpt below
+          # actually gets printed. GitHub runs `run:` under `bash -e`, which would abort the step
+          # the instant xcodebuild returns non-zero.
+          set +e
+          xcodebuild test \
+            -scheme MeldSDK \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult \
+            > xcodebuild.log 2>&1
+          status=$?
+          grep -E "Executed [0-9]+ test|^\*\* TEST" xcodebuild.log || true
+          if [ $status -ne 0 ]; then
+            echo "::group::failures"; grep -E "error:|failed|\*\* TEST FAILED" xcodebuild.log | head -50; echo "::endgroup::"
+          fi
+          exit $status
+
+      - name: Upload results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult
+          path: |
+            TestResults.xcresult
+            xcodebuild.log
+          retention-days: 7
+
+  podspec:
+    name: Lint podspec
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same command the release workflow runs, but before the tag exists rather than after.
+      # POD_VERSION is arbitrary here — the podspec reads it from the environment at release time
+      # and lint only cares that the spec builds, not what it is called.
+      - name: pod lib lint
+        env:
+          POD_VERSION: 0.0.1
+        run: pod lib lint MeldSDK.podspec --allow-warnings
