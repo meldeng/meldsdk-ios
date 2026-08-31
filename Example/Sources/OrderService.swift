@@ -22,12 +22,31 @@ enum DemoConfig {
 
     static let version = "2026-05-01"
 
-    // Fixed corridor for the demo: 15 USD -> USDC, US, Uphold card.
+    // Corridor for the demo. Defaults to a EU corridor (15 EUR -> BTC, FR) because Mercuryo's
+    // native Apple Pay does NOT process US/GB users or US/GB-issued cards — a US corridor can never
+    // complete via Apple Pay. Override per your account via Secrets.xcconfig (MELD_COUNTRY etc.):
+    // the Uphold card demo wants a US corridor (USD -> USDC, US, an 0x wallet), so set
+    // MELD_SOURCE_CURRENCY/MELD_DEST_CURRENCY/MELD_COUNTRY/MELD_WALLET when exercising that one.
     static let sourceAmount = "15"
-    static let sourceCurrency = "USD"
-    static let destinationCurrency = "USDC"
-    static let country = "US"
-    static let defaultWallet = "0x4838B106FCe9647Bdf1E7877BF73cE8B0BAD5f97"
+    static var sourceCurrency: String { setting(env: "MELD_SOURCE_CURRENCY", info: "MeldSourceCurrency", default: "EUR") }
+    static var destinationCurrency: String { setting(env: "MELD_DEST_CURRENCY", info: "MeldDestCurrency", default: "BTC") }
+    static var country: String { setting(env: "MELD_COUNTRY", info: "MeldCountry", default: "FR") }
+    static var defaultWallet: String {
+        setting(env: "MELD_WALLET", info: "MeldWallet", default: "bc1qr74wmrcwqq9w5yxczxj6udts9mnqsh3xlhk5yp")
+    }
+
+    /// Two-letter country code rendered as a flag emoji (regional-indicator symbols).
+    static var countryFlag: String {
+        country.uppercased().unicodeScalars
+            .compactMap { UnicodeScalar(127_397 + $0.value).map(String.init) }
+            .joined()
+    }
+
+    /// Apple Pay merchant id used for the Simulator preview / device test — must match
+    /// `MeldDemo.entitlements` (and, for a real device, an account whose `merchant.io.meld` Apple Pay
+    /// cert Mercuryo holds). Used as a demo-only fallback when the backend doesn't surface one (see
+    /// `OrderService.injectingMerchantIdIfMissing`).
+    static let applePayMerchantId = "merchant.io.meld"
 
     /// Resolve a credential: scheme env var first (handy for CI), then the value injected from
     /// Secrets.xcconfig via Info.plist. An empty or unresolved `$(...)` placeholder reads as "".
@@ -36,6 +55,12 @@ enum DemoConfig {
         if let v = Bundle.main.object(forInfoDictionaryKey: info) as? String,
            !v.isEmpty, !v.hasPrefix("$(") { return v }
         return ""
+    }
+
+    /// Like `secret`, but falls back to `def` when unset — for optional corridor settings.
+    private static func setting(env: String, info: String, default def: String) -> String {
+        let v = secret(env: env, info: info)
+        return v.isEmpty ? def : v
     }
 }
 
@@ -95,13 +120,22 @@ struct OrderService {
     }
 
     /// `POST /crypto/order/headless/onramp` — returns the raw order JSON to hand to `MeldOrder.from`.
-    /// `serviceProvider` is whichever quote the user selected.
-    func createOrder(serviceProvider: String, customerId: String, wallet: String, clientIP: String?) async throws -> Data {
+    /// `serviceProvider` is whichever quote the user selected; `paymentMethodType` is
+    /// `CREDIT_DEBIT_CARD` (embedded widget) or `APPLE_PAY`. The SDK reads the right surface off
+    /// the response either way — which of the two Apple Pay shapes it gets is the provider's
+    /// business, not the caller's.
+    func createOrder(
+        serviceProvider: String,
+        customerId: String,
+        wallet: String,
+        clientIP: String?,
+        paymentMethodType: String = "CREDIT_DEBIT_CARD"
+    ) async throws -> Data {
         var body: [String: Any] = [
             "customerId": customerId,
             "externalOrderId": "ios-demo-\(Int(Date().timeIntervalSince1970 * 1000))",
             "serviceProvider": serviceProvider,
-            "paymentMethodType": "CREDIT_DEBIT_CARD",
+            "paymentMethodType": paymentMethodType,
             "sourceCurrencyCode": DemoConfig.sourceCurrency,
             "sourceAmount": DemoConfig.sourceAmount,
             "destinationCurrencyCode": DemoConfig.destinationCurrency,
@@ -118,6 +152,21 @@ struct OrderService {
             throw demoError("\(code) — \(message)")
         }
         return data
+    }
+
+    /// demo-only: the sandbox/QA backend may not yet surface `merchantIdentifier` on Apple Pay
+    /// orders (it's added by a pending backend change). For the Simulator preview, inject a
+    /// placeholder — the same id as the app's Apple Pay entitlement — when the order doesn't carry
+    /// one, so the sheet can present. A real Apple-Pay-configured account returns its own
+    /// `merchantIdentifier` and this leaves the order untouched. Not something a real app does.
+    static func injectingMerchantIdIfMissing(_ orderJSON: Data, _ merchantId: String) -> Data {
+        guard var dict = (try? JSONSerialization.jsonObject(with: orderJSON)) as? [String: Any],
+              var details = dict["paymentMethodResponseDetails"] as? [String: Any],
+              (details["merchantIdentifier"] as? String)?.isEmpty != false
+        else { return orderJSON }
+        details["merchantIdentifier"] = merchantId
+        dict["paymentMethodResponseDetails"] = details
+        return (try? JSONSerialization.data(withJSONObject: dict)) ?? orderJSON
     }
 
     private func post(_ path: String, _ body: [String: Any]) async throws -> (Data, HTTPURLResponse) {

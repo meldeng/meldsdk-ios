@@ -28,11 +28,19 @@ struct UpholdCardAdapter: MeldAdapter {
 
     static let bundleResource = "uphold-payment-widget.bundle"
 
-    func matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?) -> Bool {
-        paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME" && Self.isUpholdHost(widgetUrl)
+    // Card is still host-gated: the two-step capture -> authorize flow is Uphold-specific, so this
+    // is a genuine provider adapter rather than a shape adapter. Apple Pay is not — see
+    // HostedApplePayAdapter, which matches on shape alone.
+    func matches(_ order: MeldOrder) -> Bool {
+        order.paymentMethodType == "CREDIT_DEBIT_CARD"
+            && order.paymentMethodResponseDetails?.renderMode == "IFRAME"
+            && Self.isUpholdHost(order.paymentMethodResponseDetails?.serviceProviderWidgetUrl)
     }
 
-    func mount(order: MeldOrder, into host: UIView, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+    func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
+        guard let host = context.host else {
+            throw MeldMountError.missingHost(label)
+        }
         let details = order.paymentMethodResponseDetails
         guard let sessionUrl = details?.serviceProviderWidgetUrl else {
             throw MeldMountError.missingWidgetURL
@@ -196,6 +204,9 @@ struct UpholdCardAdapter: MeldAdapter {
 
     // MARK: - Uphold hosts (both the API host that carries the session url and the widget host)
 
+    // No `.qa` entries: Meld's QA environment talks to Uphold's SANDBOX, and `widgetOrigin()`
+    // already falls back to the sandbox host for any environment not listed here. Adding a `.qa`
+    // key pointing at a non-existent Uphold QA host would break the very case it looks like it fixes.
     private static let apiHostsByEnvironment: [MeldEnvironment: Set<String>] = [
         .sandbox: ["api.enterprise.sandbox.uphold.com"],
         .production: ["api.enterprise.uphold.com"],

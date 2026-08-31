@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Apple Pay merchant id. Set to merchant.io.meld (Meld's sandbox "Friendlies"/"Payment→Prod"
+         accounts use this). On the Simulator the entitlement isn't enforced. For a REAL device test
+         it must (a) exist in the Apple Developer team you sign with, and (b) have its Apple Pay
+         Payment Processing cert set up with Mercuryo so the token decrypts. Replace if you target a
+         different account/merchant id. -->
+    <key>com.apple.developer.in-app-payments</key>
+    <array>
+        <string>merchant.io.meld</string>
+    </array>
+</dict>
+</plist>

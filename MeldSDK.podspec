@@ -24,5 +24,6 @@ Pod::Spec.new do |s|
   # (incl. the React Native wrapper) ship it; loaded via Bundle.meldResources (SPM Bundle.module vs a
   # Bundle(for:)-located MeldSDK.bundle under Pods).
   s.resource_bundles = { 'MeldSDK' => ['Sources/MeldSDK/Resources/*.js'] }
-  s.frameworks       = 'UIKit', 'WebKit'
+  # PassKit/Contacts: native Apple Pay sheet + billing contact on the shape-1 (encrypted token) path.
+  s.frameworks       = 'UIKit', 'WebKit', 'PassKit', 'Contacts'
 end
