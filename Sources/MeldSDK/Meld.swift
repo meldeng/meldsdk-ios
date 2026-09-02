@@ -22,6 +22,10 @@ public enum MeldEnvironment: String {
 public struct MeldOrder {
     public let id: String?
     public let paymentMethodType: String?
+    /// `payload.serviceProvider` from the headless order response — the provider that will process
+    /// this order (e.g. "BANXA", "MERCURYO"). Adapters are per-provider, so this is what an adapter
+    /// selects on when the order carries no widget host to identify it by.
+    public let serviceProvider: String?
     public let paymentMethodResponseDetails: Details?
 
     public struct Details {
@@ -44,9 +48,14 @@ public struct MeldOrder {
                     renderMode: d["renderMode"] as? String,
                     raw: d)
         }
+        // The provider is echoed under `payload` on the headless create response. It is required on
+        // the request, so it is always present there — but read defensively, since the mid-flow
+        // authorize-session response (Uphold) is a different shape that carries no payload.
+        let serviceProvider = (dict["payload"] as? [String: Any])?["serviceProvider"] as? String
         return MeldOrder(
             id: dict["id"] as? String,
             paymentMethodType: dict["paymentMethodType"] as? String,
+            serviceProvider: serviceProvider,
             paymentMethodResponseDetails: details)
     }
 
@@ -169,6 +178,14 @@ public enum Meld {
     // they select on disjoint presentation shapes, so neither can claim the other's order.
     static let adapters: [MeldAdapter] = [
         UpholdCardAdapter(),
+        // Ahead of BanxaCardAdapter: a Banxa order whose Banxa SDK creates it on the device is also
+        // CREDIT_DEBIT_CARD, and the card adapter would claim it and then fail on the sdkSessionToken
+        // that shape correctly does not carry. It serves Apple Pay through the same entry.
+        BanxaProviderSdkAdapter(),
+        // Banxa carries no widget URL at all (it renders from an SDK token), so it must come before
+        // the Mercuryo card adapter — which matches any CREDIT_DEBIT_CARD + IFRAME order and would
+        // otherwise claim it and then fail on the missing serviceProviderWidgetUrl.
+        BanxaCardAdapter(),
         MercuryoCardAdapter(),
         HostedLinkApplePayAdapter(),
         MercuryoApplePayAdapter(),
