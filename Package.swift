@@ -14,7 +14,7 @@ let package = Package(
         //
         // NOTE its manifest declares swift-tools-version 6.3, which raises MeldSDK's own toolchain
         // floor for every integrator regardless of whether they use Banxa.
-        .package(url: "https://github.com/BanxaOfficial/ios-payment-sdk", from: "1.0.1"),
+        .package(url: "https://github.com/BanxaOfficial/ios-payment-sdk", .upToNextMinor(from: "1.0.1")),
     ],
     targets: [
         .target(

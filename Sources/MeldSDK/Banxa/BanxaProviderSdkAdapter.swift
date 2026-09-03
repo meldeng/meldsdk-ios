@@ -14,14 +14,23 @@ import UIKit
 struct BanxaProviderSdkAdapter: MeldAdapter {
     let label = "Banxa provider SDK (card / Apple Pay, order created on device)"
 
-    /// Deferred to the presenter, which knows the surface is a modal the SDK owns rather than
-    /// something that renders into a host view.
-    var capabilities: MeldCapabilities { presenter.capabilities }
+    /// Constant, and deliberately NOT read off a presenter instance: the registry is a plain
+    /// `static let`, and `Meld.capabilities(for:)` is a pure query callers may issue from any
+    /// queue. Constructing the `@MainActor` presenter here (an earlier revision did, via
+    /// `MainActor.assumeIsolated`) trapped with "Incorrect actor executor assumption" the first time
+    /// the SDK was touched off the main thread. The surface is a modal the SDK owns rather than
+    /// something that renders into a host view, hence not embeddable.
+    let capabilities = MeldCapabilities(embeddable: false, surface: "native-sheet", requiresUserGesture: true)
 
-    let presenter: BanxaCheckoutPresenter
+    /// Built per mount, on the main actor, where presenting UI has to happen anyway.
+    private let presenterFactory: @MainActor () -> BanxaCheckoutPresenter
 
     init(presenter: BanxaCheckoutPresenter? = nil) {
-        self.presenter = presenter ?? MainActor.assumeIsolated { BanxaNativeCheckoutPresenter() }
+        if let presenter {
+            presenterFactory = { presenter }
+        } else {
+            presenterFactory = { BanxaNativeCheckoutPresenter() }
+        }
     }
 
     /// Keys on the two fields only this shape has.
@@ -40,6 +49,11 @@ struct BanxaProviderSdkAdapter: MeldAdapter {
     func mount(
         order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers
     ) throws -> MeldProviderSession {
-        try presenter.present(order: order, context: context, handlers: handlers)
+        // Presenting a sheet is main-thread work by UIKit's own rules; mount() inherits that
+        // precondition (documented on Meld.mount) rather than hopping queues and returning a session
+        // whose sheet has not appeared yet.
+        try MainActor.assumeIsolated {
+            try presenterFactory().present(order: order, context: context, handlers: handlers)
+        }
     }
 }

@@ -1,4 +1,5 @@
 import BanxaPaymentSDK
+import PrimerSDK
 import Foundation
 import UIKit
 import os
@@ -20,8 +21,10 @@ import os
 /// - **It falls back to Banxa's hosted checkout.** When Banxa withholds the `nativeToken` — today,
 ///   always, because KYC sharing is not enabled — `startPayment` presents Banxa's full hosted checkout
 ///   in its own WebView instead of a native sheet. That is the product the headless response
-///   deliberately refuses to serve, and here it is inside the vendor's SDK. `onHostedFallback` reports
-///   it so a host can tell the two apart rather than believing it got a native surface.
+///   deliberately refuses to serve, and here it is inside the vendor's SDK. There is no dedicated
+///   callback for it; `BanxaNativeSession` reports it as an `onStatusChange` with
+///   `providerStatus == "HOSTED_CHECKOUT_FALLBACK"` (recognisable because the completion carries no
+///   Banxa order id), so a host can tell the two apart rather than believing it got a native surface.
 /// - **The hosted path returns no order id.** Its completion carries only a query string, so the
 ///   Meld↔Banxa join then rests entirely on the webhook matching `externalOrderId`.
 @MainActor
@@ -54,6 +57,8 @@ struct BanxaNativeCheckoutPresenter: BanxaCheckoutPresenter {
         // The SDK holds its delegate weakly, so the session owns itself until it completes; without
         // this the callbacks are silently dropped the moment the caller stops holding the handle.
         session.retainUntilFinished()
+        // unmount() dismisses whatever Banxa's SDK presented from this controller.
+        session.presentingController = controller
 
         // The provider credential is fetched rather than read off the order — the order response is
         // persisted for idempotent replay, so it carries only a short-lived bearer for this call. The
@@ -73,11 +78,36 @@ struct BanxaNativeCheckoutPresenter: BanxaCheckoutPresenter {
                         return
                     }
                     session.link = config.providerOrderLink
+                    // Apple Pay needs the merchant identifier in Primer's settings — Primer's SDK
+                    // guards on `applePayOptions.merchantIdentifier` and throws before any sheet
+                    // appears without it. Banxa's SDK forwards PrimerSettings verbatim, so this is the
+                    // one place it can be supplied. The identifier is per-account (Mercuryo model): the
+                    // integrator declares it in their Apple Pay entitlement and registers it with Banxa.
+                    let primerSettings: PrimerSettings?
+                    if params.paymentMethodId == "apple-pay" {
+                        guard let merchantIdentifier = config.applePayMerchantIdentifier else {
+                            session.failBeforeStart(
+                                BanxaMountRefusal(
+                                    code: "apple_pay_merchant_identifier_missing",
+                                    message: "Apple Pay through Banxa needs an Apple Pay merchant identifier "
+                                        + "configured on the Meld account (the same one declared in this "
+                                        + "app's Apple Pay entitlement and registered with Banxa)."))
+                            return
+                        }
+                        primerSettings = PrimerSettings(
+                            paymentMethodOptions: PrimerPaymentMethodOptions(
+                                applePayOptions: PrimerApplePayOptions(
+                                    merchantIdentifier: merchantIdentifier,
+                                    merchantName: config.applePayMerchantName)))
+                    } else {
+                        primerSettings = nil
+                    }
                     BanxaPaymentSDK.shared.configure(
                         config: BanxaConfig(
                             apiKey: config.apiKey,
                             partnerID: config.partnerId,
-                            environment: config.environment))
+                            environment: config.environment,
+                            primerSettings: primerSettings))
                     BanxaPaymentSDK.shared.delegate = session
                     BanxaPaymentSDK.shared.startPayment(request: request, controller: controller)
                 }
@@ -104,10 +134,11 @@ struct BanxaNativeCheckoutPresenter: BanxaCheckoutPresenter {
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200...299).contains(status), let data else {
-                completion(
-                    .failure(
-                        MeldMountError.unsupported(
-                            "Could not fetch Banxa SDK configuration for this order (HTTP \(status)).")))
+                // Keep the server's error code and message: a 422 CUSTOMER_NOT_PAYMENT_READY is not a
+                // transient fetch failure, and collapsing every non-2xx into one generic
+                // 'unavailable' threw away the code the integrator would branch on and mislabelled a
+                // KYC gate as retryable.
+                completion(.failure(BanxaSdkConfigFetchError(status: status, body: data)))
                 return
             }
             do {
@@ -147,7 +178,8 @@ private struct BanxaProviderSdkParameters {
     let configUrl: URL
     let configToken: String
 
-    private let paymentMethodId: String
+    /// Read by the presenter to decide whether Primer needs Apple Pay options.
+    let paymentMethodId: String
     private let crypto: String
     private let blockchain: String?
     private let fiat: String
@@ -216,6 +248,9 @@ private struct BanxaProviderSdkConfig {
     let apiKey: String
     let partnerId: String
     let environment: BanxaEnvironment
+    /// Per-account Apple Pay merchant identifier/name for Primer's Apple Pay sheet; nil when unconfigured.
+    let applePayMerchantIdentifier: String?
+    let applePayMerchantName: String?
     /// Absent when the backend issued no link coordinates; the webhook then makes the join on its own.
     let providerOrderLink: BanxaNativeSession.ProviderOrderLink?
 
@@ -229,6 +264,8 @@ private struct BanxaProviderSdkConfig {
         self.apiKey = apiKey
         self.partnerId = partnerId
         email = json["email"] as? String
+        applePayMerchantIdentifier = (json["applePayMerchantIdentifier"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        applePayMerchantName = json["applePayMerchantName"] as? String
         // Anything unrecognised is treated as sandbox rather than production: guessing wrong in that
         // direction moves real money.
         environment = (json["environment"] as? String)?.uppercased() == "PRODUCTION" ? .production : .sandbox
@@ -242,4 +279,31 @@ private struct BanxaProviderSdkConfig {
             providerOrderLink = nil
         }
     }
+}
+
+/// A non-2xx from the provider-SDK configuration endpoint, with the server's own error code and
+/// message when the body carries them (Meld's error envelope: `{"code": ..., "message": ...}`).
+struct BanxaSdkConfigFetchError: Error {
+    let status: Int
+    let code: String?
+    let message: String
+
+    init(status: Int, body: Data?) {
+        self.status = status
+        let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        code = json?["code"] as? String
+        message = (json?["message"] as? String)
+            ?? "Could not fetch Banxa SDK configuration for this order (HTTP \(status))."
+    }
+
+    /// Retrying the same Meld order can only help for transport failures and server errors. A 4xx —
+    /// most importantly 422 CUSTOMER_NOT_PAYMENT_READY — is a decision about this order, not a blip.
+    var isRecoverable: Bool { status == 0 || status >= 500 }
+}
+
+/// A pre-start refusal that is a decision about this order, not a fetch problem: reported under its
+/// own error code and never marked recoverable.
+struct BanxaMountRefusal: Error {
+    let code: String
+    let message: String
 }

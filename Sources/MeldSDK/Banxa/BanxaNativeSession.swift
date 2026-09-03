@@ -16,6 +16,8 @@ final class BanxaNativeSession: NSObject, MeldProviderSession, BanxaPaymentSDKDe
     private let handlers: MeldEventHandlers
     /// Set once the configuration fetch lands, before the sheet is started.
     var link: ProviderOrderLink?
+    /// The controller Banxa's SDK presents from; `unmount()` dismisses what it presented.
+    weak var presentingController: UIViewController?
     private(set) var isFinished = false
     private var selfReference: BanxaNativeSession?
 
@@ -34,14 +36,20 @@ final class BanxaNativeSession: NSObject, MeldProviderSession, BanxaPaymentSDKDe
     /// The flow never reached Banxa's SDK — configuration could not be fetched. Reported as an error
     /// rather than a cancel, because nothing was presented and nobody chose to stop.
     func failBeforeStart(_ error: Error) {
+        let fetch = error as? BanxaSdkConfigFetchError
+        let refusal = error as? BanxaMountRefusal
         handlers.onError?(
             MeldError(
                 orderId: orderId,
-                code: "banxa_sdk_config_unavailable",
-                message: error.localizedDescription,
-                detail: nil,
-                // No Banxa order exists yet, so retrying this same Meld order is safe.
-                recoverable: true))
+                // The server's code when it sent one (e.g. CUSTOMER_NOT_PAYMENT_READY), so the
+                // integrator branches on the same vocabulary as the REST API.
+                code: refusal?.code ?? fetch?.code ?? "banxa_sdk_config_unavailable",
+                message: refusal?.message ?? fetch?.message ?? error.localizedDescription,
+                detail: fetch.map { "HTTP \($0.status)" },
+                // No Banxa order exists yet, so retrying the same Meld order is safe for transport and
+                // server failures — but not for a 4xx or a configuration refusal, which are decisions
+                // about this order.
+                recoverable: refusal == nil && (fetch?.isRecoverable ?? true)))
         finish()
     }
 
@@ -62,9 +70,12 @@ final class BanxaNativeSession: NSObject, MeldProviderSession, BanxaPaymentSDKDe
     // MARK: - MeldProviderSession
 
     func unmount() {
-        // Banxa's SDK owns the presented view controller and exposes no dismiss, so this releases our
-        // side rather than pretending to tear down a sheet we do not hold. Deliberately silent: as
-        // everywhere else in this SDK, unmount() does not emit onCancel.
+        // Banxa's SDK exposes no dismiss of its own, but it presents from the controller we handed
+        // it, so tearing down means dismissing that controller's presented sheet. Without this the
+        // handle contract ("unmount tears down the surface") was silently false: the sheet stayed up
+        // with its callbacks detached, and a user could complete a payment nothing was listening to.
+        presentingController?.presentedViewController?.dismiss(animated: true)
+        // Deliberately silent: as everywhere else in this SDK, unmount() does not emit onCancel.
         finish()
     }
 
@@ -86,6 +97,15 @@ final class BanxaNativeSession: NSObject, MeldProviderSession, BanxaPaymentSDKDe
         // the hosted-checkout path, which reports no order id at all, is simply skipped.
         if let providerOrderId = result.orderId, !providerOrderId.isEmpty {
             reportProviderOrder(providerOrderId)
+        } else {
+            // No Banxa order id means the SDK fell back to Banxa's HOSTED checkout (the token was
+            // withheld). Today that is the common path, not the edge case, and it is the product the
+            // headless contract refuses to serve — so it must be visible to the host rather than
+            // indistinguishable from a native sheet. Reported as a status change; the join then rests
+            // on the webhook matching externalOrderId.
+            handlers.onStatusChange?(
+                MeldStatusChange(
+                    orderId: orderId, status: .pending, providerStatus: "HOSTED_CHECKOUT_FALLBACK", raw: nil))
         }
         handlers.onPaymentSubmitted?(orderId)
         handlers.onStatusChange?(

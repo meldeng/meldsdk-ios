@@ -44,7 +44,11 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
             orderId: orderId,
             handlers: handlers,
             allowedOrigins: Self.allowedOrigins,
-            htmlContent: html
+            htmlContent: html,
+            // onReady means the component is mounted, which it reports as banxa:ready. Firing on
+            // page navigation instead would fire at bootstrap load and then swallow the real event
+            // (didFireReady), leaving the wired listener dead and a host's load-timeout disarmed.
+            firesReadyOnNavigation: false
         ) { message in
             Self.interpret(providerMessage: message, orderId: orderId)
         }
@@ -79,14 +83,19 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
             if(!S || !S.registerBanxaPrimerCheckout){ post({type:'error',detail:{error:{code:'sdk_unavailable',message:'Banxa checkout SDK failed to load'}}}); return; }
             S.registerBanxaPrimerCheckout();
             var el = document.createElement('banxa-primer-checkout');
+            // Card only. The component's default preset also renders an Apple Pay button, which a
+            // WebView at the bootstrap page's origin can never validate — it would show, then fail
+            // silently in the console. Apple Pay on iOS goes through Banxa's native SDK instead.
+            el.setAttribute('payment-methods', 'PAYMENT_CARD');
             [
               'ready','payment-start','payment-success','payment-failure','payment-cancel','card-error'
             ].forEach(function(name){
               el.addEventListener('banxa:'+name, function(e){ post({type:name, detail:(e?e.detail:null)}); });
             });
             document.getElementById('meld-banxa').appendChild(el);
-            // Property, not attribute: the component reads clientToken as a property setter, and a
-            // token in the DOM would also be visible in any page inspection.
+            // Set as a property — but the component's setter reflects it to the `client-token`
+            // attribute, so the token is in this bootstrap page's DOM regardless. Acceptable here: the
+            // page is Meld's own vendored bundle inside the app's WebView, not an integrator page.
             el.clientToken = \(tokenJSON)[0];
           } catch(err){ post({type:'error',detail:{error:{code:'mount_failed',message:String((err&&err.message)||err)}}}); }
         })();
