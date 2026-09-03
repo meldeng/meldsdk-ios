@@ -63,6 +63,13 @@ final class BanxaNativeSession: NSObject, MeldProviderSession, BanxaPaymentSDKDe
         // whose flow is over.
         if BanxaPaymentSDK.shared.delegate === self {
             BanxaPaymentSDK.shared.delegate = nil
+            // Dispose of the partner credential as soon as the flow is over. Banxa's SDK keeps the
+            // BanxaConfig it was given in its singleton for the process lifetime (in memory only — it
+            // writes nothing to UserDefaults/Keychain/disk), and the v2 apiKey inside it is a
+            // long-lived partner-wide credential. Reconfiguring with an empty config drops it; the
+            // SDK refuses to start a flow on missing credentials, and the next mount fetches a fresh
+            // config anyway.
+            BanxaPaymentSDK.shared.configure(config: BanxaConfig(apiKey: "", partnerID: ""))
         }
         selfReference = nil
     }
