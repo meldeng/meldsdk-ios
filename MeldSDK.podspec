@@ -23,7 +23,10 @@ Pod::Spec.new do |s|
   # the WebView to mount the Uphold card widget. Packaged as a resource bundle so CocoaPods consumers
   # (incl. the React Native wrapper) ship it; loaded via Bundle.meldResources (SPM Bundle.module vs a
   # Bundle(for:)-located MeldSDK.bundle under Pods).
-  s.resource_bundles = { 'MeldSDK' => ['Sources/MeldSDK/Resources/*.js'] }
+  s.resource_bundles = { 'MeldSDK' => ['Sources/MeldSDK/Resources/*.js', 'Sources/MeldSDK/Resources/*.css'] }
   # PassKit/Contacts: native Apple Pay sheet + billing contact on the shape-1 (encrypted token) path.
+  # Primer presents the Banxa Apple Pay sheet and creates the payment from the order's client token.
+  # Taken directly rather than through Banxa's wrapper, which is SPM-only and adds nothing we use.
+  s.dependency 'PrimerSDK', '~> 2.49'
   s.frameworks       = 'UIKit', 'WebKit', 'PassKit', 'Contacts'
 end

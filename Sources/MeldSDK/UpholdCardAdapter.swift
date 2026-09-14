@@ -170,11 +170,21 @@ struct UpholdCardAdapter: MeldAdapter {
         }
     }
 
-    // Capture step: surface ready + terminal cancel/error; 'complete' (card captured) is out-of-band.
+    /// Capture step: surface `ready` and `error` only. `complete` is consumed out-of-band to advance
+    /// to authorize, and `cancel` is deliberately dropped.
+    ///
+    /// Uphold's capture widget posts a bare `{"type":"cancel"}` whenever its own card dialog closes —
+    /// observed after adding a card and after deleting one, neither of which is the customer
+    /// abandoning the purchase. Forwarding it ended the Meld flow and tore the host's checkout down
+    /// mid-card-management. The payload carries nothing to tell that apart from a real abandonment,
+    /// so the distinction has to be positional: during capture the customer is managing cards, and
+    /// the surface stays up. A genuine exit is the host's own chrome to offer, which it already does.
+    ///
+    /// Authorize is different and still forwards cancel — there, closing the widget really is
+    /// declining to pay.
     static func interpretCapture(providerMessage: [String: Any]) -> [MeldEvent] {
         switch (providerMessage["type"] ?? providerMessage["event"]) as? String {
         case "ready": return [.ready]
-        case "cancel": return [.cancel]
         case "error": return [.error(errorFrom(providerMessage, orderId: nil))]
         default: return []
         }
