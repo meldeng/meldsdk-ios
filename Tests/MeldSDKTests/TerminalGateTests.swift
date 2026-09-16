@@ -5,105 +5,135 @@ import XCTest
 /// One `onPaymentSubmitted` per mount, whichever way the provider says the customer finished.
 final class TerminalGateTests: XCTestCase {
 
-    private func status(_ s: MeldStatus) -> MeldEvent {
-        .statusChange(MeldStatusChange(orderId: "ord_1", status: s, providerStatus: nil, raw: nil))
-    }
+    private final class Recorder {
+        private(set) var events: [String] = []
+        lazy var handlers: MeldEventHandlers = MeldEventHandlers(
+            onPaymentSubmitted: { [weak self] _ in self?.events.append("submitted") },
+            onStatusChange: { [weak self] c in self?.events.append("status:\(c.status.rawValue)") },
+            onCancel: { [weak self] _ in self?.events.append("cancel") },
+            onError: { [weak self] _ in self?.events.append("error") }
+        ).gated()
 
-    private func error(recoverable: Bool) -> MeldEvent {
-        .error(MeldError(orderId: "ord_1", code: "x", message: "x", recoverable: recoverable))
+        func status(_ s: MeldStatus) {
+            handlers.onStatusChange?(
+                MeldStatusChange(orderId: "ord_1", status: s, providerStatus: nil, raw: nil))
+        }
+
+        func submitted() { handlers.onPaymentSubmitted?("ord_1") }
+
+        func error(recoverable: Bool) {
+            handlers.onError?(
+                MeldError(orderId: "ord_1", code: "x", message: "x", recoverable: recoverable))
+        }
+
+        func count(_ kind: String) -> Int { events.filter { $0 == kind }.count }
     }
 
     /// Uphold's authorize widget: `complete` and nothing else, ever.
     func testSubmittedAlone() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 1)
     }
 
-    /// A provider that reports its own order complete and never sends a submitted message still
-    /// gets the host its one terminal callback.
-    func testCompletedStatusAlone() {
-        var gate = TerminalGate()
+    /// A provider that reports its own order complete and never sends a submitted message.
+    func testCompletedStatusAloneFiresAfterTheStatus() {
+        let r = Recorder()
 
-        XCTAssertTrue(gate.admit(status(.completed)))
+        r.status(.completed)
+
+        XCTAssertEqual(r.events, ["status:completed", "submitted"])
     }
 
-    /// Hosted-link Apple Pay: `commit_success` then `polling_start`, both meaning submitted.
+    /// Hosted-link Apple Pay sends `commit_success` then `polling_start`, both meaning submitted.
     func testRepeatedSubmittedFiresOnce() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
+        r.submitted()
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 1)
     }
 
-    /// The same flow's later `polling_success`. The status still reaches the host; the terminal
-    /// callback does not repeat.
+    /// The same flow's later `polling_success`. The status still lands; the callback does not repeat.
     func testCompletedAfterSubmittedDoesNotRefire() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
-        XCTAssertFalse(gate.admit(status(.completed)))
+        r.submitted()
+        r.status(.completed)
+
+        XCTAssertEqual(r.count("submitted"), 1)
+        XCTAssertEqual(r.count("status:completed"), 1)
     }
 
-    /// Mercuryo card sends "payment finished" and a `paid` status as unrelated messages, in no
-    /// guaranteed order. Either arriving first must win.
+    /// Mercuryo card sends both as unrelated messages in no guaranteed order. Either wins.
     func testSubmittedAfterCompletedDoesNotRefire() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertTrue(gate.admit(status(.completed)))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
+        r.status(.completed)
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 1)
     }
 
-    /// Progress is not terminal.
-    func testPendingIsNotTerminal() {
-        var gate = TerminalGate()
+    func testPendingDoesNotCloseTheGate() {
+        let r = Recorder()
 
-        XCTAssertFalse(gate.admit(status(.pending)))
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
-    }
+        r.status(.pending)
+        r.submitted()
 
-    func testReadyIsNotTerminal() {
-        var gate = TerminalGate()
-
-        XCTAssertFalse(gate.admit(.ready))
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
+        XCTAssertEqual(r.count("submitted"), 1)
     }
 
     /// "Payment failed" must never be followed by "payment submitted".
     func testFailedStatusClosesTheGate() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertFalse(gate.admit(status(.failed)))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
-    }
+        r.status(.failed)
+        r.submitted()
 
-    func testCancelClosesTheGate() {
-        var gate = TerminalGate()
-
-        XCTAssertFalse(gate.admit(.cancel))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
+        XCTAssertEqual(r.count("submitted"), 0)
+        XCTAssertEqual(r.count("status:failed"), 1)
     }
 
     func testCancelledStatusClosesTheGate() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertFalse(gate.admit(status(.cancelled)))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
+        r.status(.cancelled)
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 0)
+    }
+
+    func testCancelClosesTheGate() {
+        let r = Recorder()
+
+        r.handlers.onCancel?("ord_1")
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 0)
+        XCTAssertEqual(r.count("cancel"), 1)
     }
 
     func testTerminalErrorClosesTheGate() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertFalse(gate.admit(error(recoverable: false)))
-        XCTAssertFalse(gate.admit(.paymentSubmitted))
+        r.error(recoverable: false)
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 0)
     }
 
-    /// A script that failed to load is recoverable: the mount is still alive and the customer may
-    /// yet pay, so closing here would swallow the real terminal event.
+    /// A load failure is recoverable: the surface is still alive and the customer may yet pay, so
+    /// closing here would swallow the real terminal event.
     func testRecoverableErrorLeavesTheGateOpen() {
-        var gate = TerminalGate()
+        let r = Recorder()
 
-        XCTAssertFalse(gate.admit(error(recoverable: true)))
-        XCTAssertTrue(gate.admit(.paymentSubmitted))
+        r.error(recoverable: true)
+        r.submitted()
+
+        XCTAssertEqual(r.count("submitted"), 1)
     }
 }

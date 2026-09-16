@@ -25,7 +25,6 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
 
     private var controller: PKPaymentAuthorizationController?
     private var didAuthorize = false
-    private var terminal = TerminalGate()
     // PassKit holds its delegate weakly and nothing else retains us for the sheet's lifetime, so we
     // keep a strong self-reference from present() until the sheet finishes or is dismissed.
     private var selfRetain: ApplePayCoordinator?
@@ -171,29 +170,24 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
     func paymentAuthorizationControllerDidFinish(_ controller: PKPaymentAuthorizationController) {
         controller.dismiss(completion: nil)
         // Finishing without ever authorizing means the user dismissed the sheet.
-        if !didAuthorize { dispatch(.cancel) }
+        if !didAuthorize { handlers.onCancel?(orderId) }
         cleanup()
     }
 
     // MARK: - Helpers
 
-    /// Every provider event reaches the host through here, so the terminal gate sees them all.
-    /// The status lands before the synthesized `onPaymentSubmitted`, so a host that reads both
-    /// gets them in the order they happened.
     private func dispatch(_ event: MeldEvent) {
-        let submitted = terminal.admit(event)
         switch event {
         case .ready: handlers.onReady?(orderId)
-        case .paymentSubmitted: break
+        case .paymentSubmitted: handlers.onPaymentSubmitted?(orderId)
         case let .statusChange(change): handlers.onStatusChange?(change)
         case .cancel: handlers.onCancel?(orderId)
         case let .error(error): handlers.onError?(error)
         }
-        if submitted { handlers.onPaymentSubmitted?(orderId) }
     }
 
     private func emitError(code: String, message: String, recoverable: Bool) {
-        dispatch(.error(MeldError(orderId: orderId, code: code, message: message, recoverable: recoverable)))
+        handlers.onError?(MeldError(orderId: orderId, code: code, message: message, recoverable: recoverable))
     }
 
     private func cleanup() {

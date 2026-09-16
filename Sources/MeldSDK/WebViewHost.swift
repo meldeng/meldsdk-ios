@@ -42,7 +42,6 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     private let firesReadyOnNavigation: Bool
     private weak var webView: WKWebView?
     private var didFireReady = false
-    private var terminal = TerminalGate()
 
     init(url: URL, orderId: String?, handlers: MeldEventHandlers,
          allowedOrigins: Set<String> = [],
@@ -275,24 +274,19 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
         return mainFrameHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
     }
 
-    /// Every provider event reaches the host through here, so the terminal gate sees them all.
-    /// The status lands before the synthesized `onPaymentSubmitted`, so a host that reads both
-    /// gets them in the order they happened.
     private func dispatch(_ event: MeldEvent) {
-        let submitted = terminal.admit(event)
         switch event {
         case .ready: fireReadyOnce()
-        case .paymentSubmitted: break
+        case .paymentSubmitted: handlers.onPaymentSubmitted?(orderId)
         case let .statusChange(change): handlers.onStatusChange?(change)
         case .cancel: handlers.onCancel?(orderId)
         case let .error(error): handlers.onError?(error)
         }
-        if submitted { handlers.onPaymentSubmitted?(orderId) }
     }
 
     private func emitError(code: String, message: String, detail: String? = nil, recoverable: Bool) {
-        dispatch(.error(MeldError(orderId: orderId, code: code, message: message,
-                                  detail: detail, recoverable: recoverable)))
+        handlers.onError?(MeldError(orderId: orderId, code: code, message: message,
+                                    detail: detail, recoverable: recoverable))
     }
 
     // MARK: - Diagnostics
