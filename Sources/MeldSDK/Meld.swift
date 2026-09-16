@@ -227,7 +227,9 @@ public enum Meld {
         // The adapter owns how its surface is rendered (URL in a WebView, native PassKit sheet, …)
         // and validates whatever it needs from the context.
         let context = MeldMountContext(host: host, applePay: applePay)
-        let session = try adapter.mount(order: order, context: context, handlers: handlers)
+        // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
+        // handler directly — see TerminalGate.
+        let session = try adapter.mount(order: order, context: context, handlers: handlers.gated())
         return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session)
     }
 
