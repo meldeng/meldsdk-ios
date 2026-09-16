@@ -77,10 +77,16 @@ handle.unmount()
 | Event | Fires when | Do |
 |---|---|---|
 | `onReady` | Widget mounted & interactive | Hide spinner |
-| `onPaymentSubmitted` | User finished the provider payment flow (UX hint only) | Show "processing" |
+| `onPaymentSubmitted` | User finished the provider payment flow — **exactly once per mount** (UX hint only) | Unmount, show "processing" |
 | `onStatusChange` | Order status changed; `status` is `pending` \| `completed` \| `failed` \| `cancelled` | React to status; `completed` = provider "order complete" (still not settlement) |
 | `onCancel` | User cancelled | Show retry CTA |
 | `onError` | Load failure or terminal `failed` status | Show error; `recoverable` says retry vs. new order |
+
+`onPaymentSubmitted` fires once and only once, however the provider signals it. Some send a
+"payment finished" message and never a status; some send `completed` and never a finished message;
+some send both, in either order. The SDK collapses that into one callback, so you do not need a
+`settledOnce` guard of your own. A terminal `failed`, `cancelled` or non-recoverable error closes
+it, so a failure is never followed by a submission.
 
 `status` is normalized across providers — code against it, not the raw provider string (which
 is available in `providerStatus` for logging). A terminal `failed` also fires `onError`, and a
@@ -148,7 +154,7 @@ name/address Apple returns; it never sees a PAN. The same event model and settle
 
 Neither `onPaymentSubmitted` nor `onStatusChange` with `status == .completed` is settlement —
 both are client-side UX signals. Mark the order paid only when your backend receives Meld's
-`TRANSACTION_STATUS_CHANGED` webhook. Show "processing", not "success", until then.
+`TRANSACTION_CRYPTO_COMPLETE` webhook. Show "processing", not "success", until then.
 
 ## Mercuryo — prerequisites
 
