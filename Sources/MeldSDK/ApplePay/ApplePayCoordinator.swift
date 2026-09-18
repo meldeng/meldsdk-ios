@@ -1,180 +1,126 @@
 import Contacts
 import Foundation
-import os.log
 import PassKit
 
-/// Drives a native Apple Pay payment for a Mercuryo Apple Pay order: builds the `PKPaymentRequest`,
-/// presents the sheet, and on authorization posts the encrypted token to the order's `/process`
-/// endpoint, mapping the result onto Meld events. It conforms to `MeldProviderSession` so the same
-/// `MeldWidgetHandle.unmount()` tears it down (dismisses the sheet) as for widget surfaces.
-///
-/// The sheet is a modal native surface, not a view we mount — so this is reached via
-/// `Meld.presentApplePay`, not `Meld.mount`.
+/// Presents PassKit and collects wallet data. The adapter's processor owns transport and recovery.
 final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDelegate, MeldProviderSession {
     private let orderId: String?
     private let merchantIdentifier: String
-    private let merchantTransactionId: String
     private let request: MeldApplePayRequest
-    // Provider-determined PKPaymentRequest config (the adapter supplies these — e.g. Mercuryo
-    // requires merchant country "LT", Visa/Mastercard, and 3DS+credit+debit).
     private let merchantCountryCode: String
     private let supportedNetworks: [PKPaymentNetwork]
     private let merchantCapabilities: PKMerchantCapability
     private let handlers: MeldEventHandlers
-    private let client: MercuryoApplePayClient
-
+    private let process: (WalletPayment, @escaping (ApplePayProcessOutcome) -> Void) -> Void
+    private let onFinished: () -> Void
     private var controller: PKPaymentAuthorizationController?
     private var didAuthorize = false
-    // PassKit holds its delegate weakly and nothing else retains us for the sheet's lifetime, so we
-    // keep a strong self-reference from present() until the sheet finishes or is dismissed.
+    private var active = true
+    private var closing = false
+    private var finished = false
+    // PassKit holds its delegate weakly; retain until dismissal completes.
     private var selfRetain: ApplePayCoordinator?
 
-    init(orderId: String?,
-         merchantIdentifier: String,
-         merchantTransactionId: String,
-         request: MeldApplePayRequest,
-         merchantCountryCode: String,
-         supportedNetworks: [PKPaymentNetwork],
-         merchantCapabilities: PKMerchantCapability,
-         handlers: MeldEventHandlers,
-         client: MercuryoApplePayClient) {
+    init(orderId: String?, merchantIdentifier: String, request: MeldApplePayRequest,
+         merchantCountryCode: String, supportedNetworks: [PKPaymentNetwork],
+         merchantCapabilities: PKMerchantCapability, handlers: MeldEventHandlers,
+         process: @escaping (WalletPayment, @escaping (ApplePayProcessOutcome) -> Void) -> Void,
+         onFinished: @escaping () -> Void) {
         self.orderId = orderId
         self.merchantIdentifier = merchantIdentifier
-        self.merchantTransactionId = merchantTransactionId
         self.request = request
         self.merchantCountryCode = merchantCountryCode
         self.supportedNetworks = supportedNetworks
         self.merchantCapabilities = merchantCapabilities
         self.handlers = handlers
-        self.client = client
+        self.process = process
+        self.onFinished = onFinished
     }
 
     func present() {
+        guard active, controller == nil else { return }
         let pkRequest = PKPaymentRequest()
         pkRequest.merchantIdentifier = merchantIdentifier
         pkRequest.merchantCapabilities = merchantCapabilities
         pkRequest.supportedNetworks = supportedNetworks
         pkRequest.countryCode = merchantCountryCode
         pkRequest.currencyCode = request.currencyCode
-        // Name + postal address are required by the provider's /process call. Email is requested so
-        // the sheet's billing email can be preferred over the order's — a customer's Apple Pay
-        // billing email is often the one the provider should bill against.
         pkRequest.requiredBillingContactFields = [.name, .postalAddress, .emailAddress]
-        pkRequest.paymentSummaryItems = [
-            PKPaymentSummaryItem(
-                label: request.summaryItemLabel,
-                amount: NSDecimalNumber(decimal: request.amount)),
-        ]
-
+        pkRequest.paymentSummaryItems = [PKPaymentSummaryItem(label: request.summaryItemLabel,
+                                                             amount: NSDecimalNumber(decimal: request.amount))]
         let controller = PKPaymentAuthorizationController(paymentRequest: pkRequest)
         controller.delegate = self
         self.controller = controller
-        self.selfRetain = self
+        selfRetain = self
         controller.present { [weak self] presented in
-            guard let self else { return }
             DispatchQueue.main.async {
-                if presented {
-                    self.handlers.onReady?(self.orderId)
-                } else {
-                    self.emitError(code: "APPLE_PAY_UNAVAILABLE",
-                                   message: MeldApplePayError.unavailable.errorDescription ?? "unavailable",
-                                   recoverable: false)
-                    self.cleanup()
+                guard let self, self.active else { return }
+                if presented { self.handlers.onReady?(self.orderId) }
+                else {
+                    self.emitError(code: "APPLE_PAY_UNAVAILABLE", message: "Apple Pay is not available on this device.")
+                    self.finishSheet()
                 }
             }
         }
     }
 
     func unmount() {
-        controller?.dismiss(completion: nil)
-        cleanup()
+        active = false
+        finishSheet()
     }
 
-    // MARK: - PKPaymentAuthorizationControllerDelegate
-
-    func paymentAuthorizationController(
-        _ controller: PKPaymentAuthorizationController,
-        didAuthorizePayment payment: PKPayment,
-        handler completion: @escaping (PKPaymentAuthorizationResult) -> Void
-    ) {
+    func paymentAuthorizationController(_ controller: PKPaymentAuthorizationController,
+                                        didAuthorizePayment payment: PKPayment,
+                                        handler completion: @escaping (PKPaymentAuthorizationResult) -> Void) {
+        guard active, !didAuthorize else {
+            completion(PKPaymentAuthorizationResult(status: .failure, errors: nil)); return
+        }
         didAuthorize = true
-
-        // The iOS Simulator returns an empty payment token (no Secure Element), so there's nothing
-        // to process. Fail with a clear message rather than posting an empty token and surfacing the
-        // backend's generic "payToken is required". Real Apple Pay must be tested on a device.
+        // Simulator tokens are empty; no request is sent without a real encrypted wallet token.
         guard !payment.token.paymentData.isEmpty else {
-            emitError(code: "EMPTY_APPLE_PAY_TOKEN",
-                      message: "Apple Pay returned an empty payment token. This happens on the iOS "
-                          + "Simulator — test Apple Pay on a real device.",
-                      recoverable: false)
-            completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+            reject("EMPTY_APPLE_PAY_TOKEN", "Apple Pay returned an empty payment token. Test Apple Pay on a real device.", completion)
             return
         }
-
         guard let name = payment.billingContact?.name,
               let firstName = name.givenName, !firstName.isEmpty,
               let lastName = name.familyName, !lastName.isEmpty else {
-            emitError(code: "MISSING_BILLING_NAME",
-                      message: "Apple Pay did not return a cardholder name required to process the payment.",
-                      recoverable: false)
-            completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+            reject("MISSING_BILLING_NAME", "Apple Pay did not return a cardholder name required to process payment.", completion)
             return
         }
-
         let postal = payment.billingContact?.postalAddress
+        // PassKit returns one multiline street; the action contract has two control-free lines.
+        let streets = postal?.street.components(separatedBy: .newlines).filter { !$0.isEmpty } ?? []
         let billing = ApplePayProcessBody.BillingAddress(
-            // CNPostalAddress.isoCountryCode is lowercase ("us"); the backend wants ISO alpha-2 caps.
-            countryCode: postal?.isoCountryCode.uppercased(),
-            // CNPostalAddress.street is a single (possibly multi-line) field — map it to line 1.
-            streetLine1: postal?.street,
-            streetLine2: nil,
-            stateCode: postal?.state,
-            city: postal?.city,
-            zipCode: postal?.postalCode)
-
-        let body = ApplePayProcessBody.make(
-            payTokenBase64: payment.token.paymentData.base64EncodedString(),
-            merchantTransactionId: merchantTransactionId,
-            walletAddress: request.walletAddress,
-            clientIpAddress: request.clientIpAddress,
-            firstName: firstName,
-            lastName: lastName,
-            // Sheet first, order second — the same precedence the published integration guide
-            // documents ("billing contact email from the sheet, falling back to the customer's").
-            email: payment.billingContact?.emailAddress?.nonBlank ?? request.email,
-            billing: billing)
-
-        client.process(body: body) { [weak self] result in
-            guard let self else {
-                completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
-                return
-            }
+            countryCode: postal?.isoCountryCode.uppercased(), streetLine1: streets.first,
+            streetLine2: streets.count > 1 ? streets.dropFirst().joined(separator: ", ") : nil,
+            stateCode: postal?.state, city: postal?.city, zipCode: postal?.postalCode)
+        let wallet = WalletPayment(token: payment.token.paymentData.base64EncodedString(),
+                                   firstName: firstName, lastName: lastName,
+                                   email: payment.billingContact?.emailAddress?.nonBlank ?? request.email,
+                                   billing: billing)
+        process(wallet) { [weak self] outcome in
             DispatchQueue.main.async {
-                switch result {
-                case let .success((status, json)):
-                    let outcome = ApplePayResponseInterpreter.interpret(
-                        httpStatus: status, json: json, orderId: self.orderId)
-                    outcome.events.forEach(self.dispatch)
-                    completion(PKPaymentAuthorizationResult(
-                        status: outcome.succeeded ? .success : .failure, errors: nil))
-                case let .failure(error):
-                    // Transport-level failure — the payment may or may not have gone through, so
-                    // it's recoverable (retry) and not a terminal decline.
-                    self.emitError(code: "PROCESS_FAILED", message: error.localizedDescription, recoverable: true)
-                    completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+                guard let self, self.active else {
+                    completion(PKPaymentAuthorizationResult(status: .failure, errors: nil)); return
                 }
+                for event in outcome.events where self.active { self.dispatch(event) }
+                completion(PKPaymentAuthorizationResult(status: outcome.succeeded ? .success : .failure, errors: nil))
+                self.finishSheet()
             }
         }
     }
 
     func paymentAuthorizationControllerDidFinish(_ controller: PKPaymentAuthorizationController) {
-        controller.dismiss(completion: nil)
-        // Finishing without ever authorizing means the user dismissed the sheet.
-        if !didAuthorize { handlers.onCancel?(orderId) }
-        cleanup()
+        if active, !didAuthorize { handlers.onCancel?(orderId) }
+        finishSheet()
     }
 
-    // MARK: - Helpers
+    private func reject(_ code: String, _ message: String,
+                        _ completion: (PKPaymentAuthorizationResult) -> Void) {
+        emitError(code: code, message: message)
+        completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+        finishSheet()
+    }
 
     private func dispatch(_ event: MeldEvent) {
         switch event {
@@ -186,18 +132,29 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         }
     }
 
-    private func emitError(code: String, message: String, recoverable: Bool) {
-        handlers.onError?(MeldError(orderId: orderId, code: code, message: message, recoverable: recoverable))
+    private func emitError(code: String, message: String) {
+        guard active else { return }
+        handlers.onError?(MeldError(orderId: orderId, code: code, message: message, recoverable: false))
+    }
+
+    private func finishSheet() {
+        guard !closing, !finished else { return }
+        closing = true
+        if let controller { controller.dismiss { [self] in cleanup() } }
+        else { cleanup() }
     }
 
     private func cleanup() {
+        guard !finished else { return }
+        finished = true
+        active = false
         controller = nil
         selfRetain = nil
+        onFinished()
     }
 }
 
 private extension String {
-    /// nil for an empty or whitespace-only value, so `??` falls through to the next source.
     var nonBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
