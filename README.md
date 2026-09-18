@@ -229,9 +229,9 @@ required by [Coinbase's headless integration](https://docs.cdp.coinbase.com/onra
 Apps that previously kept the host offscreen must adopt a visible container before updating this SDK.
 
 Mercuryo native wallet orders use the generic action transport and durable attempt/verification
-lifecycle described above. The Stripe crypto onramp adapter remains separate work. An unsupported
-Stripe descriptor is never sent to the native-wallet
-adapter. React Native consumers need a release containing this change and a matching native dependency
+lifecycle described above. Declared `STRIPE_CRYPTO_ONRAMP` orders use the native SDK adapter for
+Apple Pay or card. An unsupported Stripe descriptor is never sent to the native-wallet adapter.
+React Native consumers need a release containing this change and a matching native dependency
 update; an OTA JavaScript update alone cannot change the native resolver.
 
 ### Public calls
@@ -242,7 +242,8 @@ update; an OTA JavaScript update alone cannot change the native resolver.
 - `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
   surface and relays its events. Pass `into:` a `UIView` for an embedded widget, or `applePay:` a
   `MeldApplePayRequest` for an Apple Pay order; `handle.unmount()` tears it down (removes the widget
-  or dismisses the sheet). See [Native Apple Pay](#native-apple-pay).
+  or dismisses the sheet). Retain the handle while the payment UI is in use; releasing it also unmounts
+  the session. See [Native Apple Pay](#native-apple-pay).
 - `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
 - `MeldApplePayRequest` — amount/currency, display label and fallback email; wallet/IP fields
   are required only for historical orders using the legacy endpoint.
@@ -250,9 +251,9 @@ update; an OTA JavaScript update alone cannot change the native resolver.
 
 ## Local tests
 
-### Stripe native bridge
+### Stripe native flow
 
-The internal Stripe bridge uses the real `StripeCryptoOnramp` 26.11.0 API and a serialized coordinator
+The Stripe adapter uses the real `StripeCryptoOnramp` 26.11.0 API and a serialized coordinator
 lifecycle. It validates the order's SDK configuration, route, action declarations and recovery responses;
 rejects late or foreign-session checkout callbacks; and keeps SDK ownership until pending calls and
 logout finish. Identity input and SDK credentials are not persisted or returned in diagnostics.
@@ -262,9 +263,21 @@ state in submission reads. The decoder distinguishes initial bootstrap, seamless
 consent, and validates the renewed intent's handle and expiry separately from authentication secrets.
 Older responses missing this contract are rejected; they do not authorize a replacement order.
 
-This is a prerequisite for the native adapter. Stripe remains `unsupported` in public capability
-inspection until the visible forms, authentication restoration and payment flow controller are wired
-and verified. The current tests do not establish device/provider payment acceptance.
+Valid declared orders report `surface == "native-sdk"`. Use the same `Meld.mount` call; the adapter
+owns registration, KYC and address forms, identity verification, wallet registration and payment.
+Amounts, currency and wallet destination come from the order. Integrators do not route Stripe
+callbacks or exchange provider credentials. Registration email is a transient SDK input; the server
+still binds consent and completion to the order's customer. Use the email associated with that order.
+
+The controller reads submission state before opening provider UI, preserves an existing session,
+and stores only the shared device attempt fence and mutation UUID. Transport retries reuse the same
+body and key; each actual checkout callback receives its own pair. A KYC result during checkout
+resumes verification and re-quotes the same session. Pending verification and unresolved payment
+emit `pending`; native SDK completion alone does not emit a completed order. Track that existing
+order through your backend. Unmount dismisses owned UI, suppresses late events and clears SDK state
+after pending work finishes. Synthetic simulator tests do not establish device/provider payment
+acceptance; enrolled Stripe account, trusted app, Apple Pay entitlements and device checks remain
+required before rollout.
 
 Both package managers pin Stripe to **26.11.0**. SwiftPM uses Stripe's official
 [`stripe-ios-spm`](https://github.com/stripe/stripe-ios-spm) repository. The 25.11 package does not expose

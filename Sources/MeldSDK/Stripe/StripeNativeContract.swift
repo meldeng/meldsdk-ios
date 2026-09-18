@@ -4,7 +4,7 @@ import PassKit
 import StripeCore
 
 enum StripeNativeError: Error {
-    case invalidOrder, invalidResponse, unavailable, busy, cancelled, authorizationRequired
+    case invalidOrder, invalidResponse, unavailable, busy, cancelled, authorizationRequired, actionRequired
 }
 
 /// Validated inputs for the native adapter. Descriptions never expose customer or SDK credentials.

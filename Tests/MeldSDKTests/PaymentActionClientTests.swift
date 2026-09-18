@@ -157,6 +157,20 @@ final class PaymentActionClientTests: XCTestCase {
         wait(for: [done], timeout: 3)
     }
 
+    func testNormalizedErrorsRequireKnownVersionCodeAndMatchingHttpStatus() throws {
+        let valid = try JSONSerialization.data(withJSONObject: ["version": 1, "code": "AUTHORIZATION_REQUIRED", "secret": "synthetic-private"])
+        guard case .action(.authorizationRequired) = PaymentActionFailureCode.decode(valid, status: 401) else {
+            return XCTFail("Expected only the normalized code")
+        }
+        for json: [String: Any] in [["version": true, "code": "AUTHORIZATION_REQUIRED"],
+                                    ["version": 2, "code": "AUTHORIZATION_REQUIRED"],
+                                    ["version": 1, "code": "unknown-sensitive-value"]] {
+            let data = try JSONSerialization.data(withJSONObject: json)
+            XCTAssertEqual(String(describing: PaymentActionFailureCode.decode(data, status: 401)), "http(401)")
+        }
+        XCTAssertEqual(String(describing: PaymentActionFailureCode.decode(valid, status: 500)), "http(500)")
+    }
+
     private func descriptor(action: [String: Any] = [:]) throws -> PaymentActionDescriptor {
         var json = WalletFixtures.json()
         json["paymentActions"] = WalletFixtures.actions().merging(action) { _, next in next }

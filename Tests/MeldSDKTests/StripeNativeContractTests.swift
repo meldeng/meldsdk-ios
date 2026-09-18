@@ -12,8 +12,7 @@ final class StripeNativeContractTests: XCTestCase {
         XCTAssertEqual(value.actions.operations["READ_SUBMISSION"], false)
         XCTAssertEqual(value.description, "StripeNativeOrder[REDACTED]")
         XCTAssertFalse(value.description.contains("wallet-synthetic"))
-        // The bridge is not enabled until forms, restoration and orchestration are implemented.
-        XCTAssertEqual(Meld.capabilities(for: try order()).surface, "unsupported")
+        XCTAssertEqual(Meld.capabilities(for: try order()).surface, "native-sdk")
     }
 
     func testHistoricalAndIncompleteBootstrapsCannotSelectAWorkingNativeFlow() throws {

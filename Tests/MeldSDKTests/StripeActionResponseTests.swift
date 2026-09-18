@@ -2,6 +2,23 @@ import XCTest
 @testable import MeldSDK
 
 final class StripeActionResponseTests: XCTestCase {
+    func testLinkCompletionUsesCustomerVerificationStatesAndStatusReadsRequireDetails() throws {
+        for (status, next) in [("VERIFIED", "CREATE_PAYMENT_SESSION"), ("PENDING", "RETRY"),
+                               ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_VERIFY_IDENTITY")] {
+            var json: [String: Any] = ["version": 1, "status": status, "nextStep": next]
+            XCTAssertNoThrow(try StripeActionResponse(json).validateCustomerAction(requiresDetails: false))
+            XCTAssertThrowsError(try StripeActionResponse(json).validateCustomerAction(requiresDetails: true))
+            json["customer"] = ["missingFields": []]
+            XCTAssertNoThrow(try StripeActionResponse(json).validateCustomerAction(requiresDetails: true))
+            json["sdk"] = ["clientSecret": "synthetic-unexpected"]
+            XCTAssertThrowsError(try StripeActionResponse(json).validateCustomerAction(requiresDetails: true))
+        }
+        XCTAssertThrowsError(try StripeActionResponse(["version": 1, "status": "AUTHORIZED", "nextStep": "CREATE_PAYMENT_SESSION"])
+            .validateCustomerAction(requiresDetails: false))
+        XCTAssertThrowsError(try StripeActionResponse(["version": 1, "status": "VERIFIED", "nextStep": "SDK_COLLECT_KYC"])
+            .validateCustomerAction(requiresDetails: false))
+    }
+
     func testReadProjectionNeverConfusesProgressOrUnknownWithAReusableAttempt() throws {
         let rows: [(String, String, StripeActionResponse.Submission)] = [
             ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .inProgress),

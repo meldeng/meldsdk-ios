@@ -11,6 +11,7 @@ struct StripeActionResponse: CustomStringConvertible {
     private let secret: String?
     private let expiresAt: Date?
     let missingFields: [String]
+    private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
 
     init(_ value: [String: Any]) throws {
@@ -49,7 +50,21 @@ struct StripeActionResponse: CustomStringConvertible {
                   fields.allSatisfy(Self.fields.contains), Set(fields).count == fields.count
             else { throw StripeNativeError.invalidResponse }
             missingFields = fields
-        } else { missingFields = [] }
+            hasCustomer = true
+        } else { missingFields = []; hasCustomer = false }
+    }
+
+    func validateCustomerAction(requiresDetails: Bool) throws {
+        guard !requiresDetails || hasCustomer,
+              session == nil, secret == nil, expiresAt == nil, intent == nil, authentication == nil
+        else { throw StripeNativeError.invalidResponse }
+        switch (status, next) {
+        case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"),
+             ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"),
+             ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"),
+             ("PENDING", "RETRY"), ("NOT_AVAILABLE", "REGION_NOT_SUPPORTED"): return
+        default: throw StripeNativeError.invalidResponse
+        }
     }
 
     func authenticationSecret(now: Date = Date()) throws -> String {
