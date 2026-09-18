@@ -56,8 +56,8 @@ Meld.configure(environment: .sandbox) // or .production
 // untouched — the SDK reads what it needs from it.
 let order = try MeldOrder.from(jsonData: orderJSON)
 
-guard Meld.capabilities(for: order).embeddable else {
-    // not an embeddable order for this SDK — handle it elsewhere
+guard Meld.capabilities(for: order).surface != "unsupported" else {
+    // This SDK cannot present this order; offer an explicitly supported alternative.
     return
 }
 
@@ -72,6 +72,26 @@ let handle = try Meld.mount(order, into: containerView, handlers: MeldEventHandl
 // On teardown (navigation away, modal dismiss):
 handle.unmount()
 ```
+
+## Check presentation support before creating an order
+
+Decode the `headlessPresentation` served on the selected quote or payment method. No provider name,
+order ID or payment credential is needed:
+
+```swift
+guard let presentation = MeldHeadlessPresentation(json: presentationJSON),
+      Meld.capabilities(for: presentation, paymentMethodType: paymentMethodType).surface != "unsupported"
+else { return } // Missing, malformed or unimplemented protocol: select a supported alternative.
+```
+
+This advisory check uses the same installed adapter registry as order dispatch. It does not
+establish route eligibility, Apple Pay availability, legal acceptance or authorization to pay.
+Keep checking requirements and device readiness, then validate the actual order with
+`Meld.capabilities(for: order)` before mounting it. `embeddable` only indicates whether a visible
+host is needed; native sheets can be supported with `embeddable == false`. Never invent a
+presentation from a provider name or fabricate an order for preflight.
+
+The preflight API is available from 0.8.0. Older releases do not provide it.
 
 ## Events
 

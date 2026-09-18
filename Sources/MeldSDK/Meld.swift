@@ -197,6 +197,16 @@ public enum Meld {
             ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
     }
 
+    /// Advisory support for a quote or payment method before creating an order. This only checks
+    /// the installed adapter registry: it does not validate eligibility, Apple Pay availability,
+    /// legal evidence or an order's credentials. Check `capabilities(for: order)` again before mount.
+    /// Missing declarations must not be inferred from a provider name or legacy payload fields.
+    public static func capabilities(for presentation: MeldHeadlessPresentation,
+                                    paymentMethodType: String) -> MeldCapabilities {
+        registry.adapter(for: presentation, paymentMethodType: paymentMethodType)?.capabilities
+            ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
+    }
+
     /// Mount the order's payment surface and relay its lifecycle through `handlers`. One call for
     /// every surface — the order selects the adapter, which renders the right thing:
     ///
