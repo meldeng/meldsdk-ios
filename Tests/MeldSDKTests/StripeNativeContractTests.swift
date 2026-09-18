@@ -76,6 +76,11 @@ final class StripeNativeContractTests: XCTestCase {
             actions["endpoint"] = "/crypto/order/headless/onramp/TEST_PROVIDER/other-order/actions"
             root["paymentActions"] = actions
         }
+        try rejected { root in
+            var actions = root["paymentActions"] as! [String: Any]
+            actions["operations"] = (actions["operations"] as! [[String: Any]]).filter { $0["operation"] as? String != "PREPARE_CUSTOMER_AUTHORIZATION" }
+            root["paymentActions"] = actions
+        }
     }
 
     func testWalletRequestUsesTheBoundTotalAndRejectsCallerOverrides() throws {
@@ -142,7 +147,7 @@ final class StripeNativeContractTests: XCTestCase {
             "paymentActions": ["version": 1, "endpoint": "/crypto/order/headless/onramp/TEST_PROVIDER/test-order/actions",
                                "bearerTokenPointer": "/paymentMethodResponseDetails/continuationToken",
                                "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS",
-                                              "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "CREATE_PAYMENT_SESSION",
+                                              "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "PREPARE_CUSTOMER_AUTHORIZATION", "CREATE_PAYMENT_SESSION",
                                               "CONFIRM_PAYMENT", "REFRESH_QUOTE"].enumerated().map {
                                                   ["operation": $0.element, "idempotencyKeyRequired": $0.offset >= 3] as [String: Any]
                                               }],

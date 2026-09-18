@@ -257,6 +257,11 @@ lifecycle. It validates the order's SDK configuration, route, action declaration
 rejects late or foreign-session checkout callbacks; and keeps SDK ownership until pending calls and
 logout finish. Identity input and SDK credentials are not persisted or returned in diagnostics.
 
+Recovery requires the declared `PREPARE_CUSTOMER_AUTHORIZATION` action and explicit SDK authentication
+state in submission reads. The decoder distinguishes initial bootstrap, seamless restoration and renewed
+consent, and validates the renewed intent's handle and expiry separately from authentication secrets.
+Older responses missing this contract are rejected; they do not authorize a replacement order.
+
 This is a prerequisite for the native adapter. Stripe remains `unsupported` in public capability
 inspection until the visible forms, authentication restoration and payment flow controller are wired
 and verified. The current tests do not establish device/provider payment acceptance.

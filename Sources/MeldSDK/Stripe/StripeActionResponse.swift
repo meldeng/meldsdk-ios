@@ -5,6 +5,9 @@ struct StripeActionResponse: CustomStringConvertible {
     let status: String
     let next: String
     let session: String?
+    enum Authentication: String { case bootstrap = "BOOTSTRAP", restore = "RESTORE", reauthorize = "REAUTHORIZE" }
+    private let authentication: Authentication?
+    private let intent: String?
     private let secret: String?
     private let expiresAt: Date?
     let missingFields: [String]
@@ -18,6 +21,16 @@ struct StripeActionResponse: CustomStringConvertible {
         self.status = status; self.next = next
         if let raw = value["sdk"] {
             guard let sdk = raw as? [String: Any] else { throw StripeNativeError.invalidResponse }
+            if let raw = sdk["authenticationState"] {
+                guard let raw = raw as? String, let parsed = Authentication(rawValue: raw)
+                else { throw StripeNativeError.invalidResponse }
+                authentication = parsed
+            } else { authentication = nil }
+            if let raw = sdk["authorizationHandle"] {
+                guard let parsed = StripeNativeValue.identifier(raw, prefix: "lai_")
+                else { throw StripeNativeError.invalidResponse }
+                intent = parsed
+            } else { intent = nil }
             if let raw = sdk["sessionHandle"] {
                 guard let parsed = StripeNativeValue.identifier(raw, prefix: "cos_") else { throw StripeNativeError.invalidResponse }
                 session = parsed
@@ -30,7 +43,7 @@ struct StripeActionResponse: CustomStringConvertible {
                 guard let raw = raw as? String, let date = Self.date(raw) else { throw StripeNativeError.invalidResponse }
                 expiresAt = date
             } else { expiresAt = nil }
-        } else { session = nil; secret = nil; expiresAt = nil }
+        } else { session = nil; secret = nil; expiresAt = nil; authentication = nil; intent = nil }
         if let raw = value["customer"] {
             guard let customer = raw as? [String: Any], let fields = customer["missingFields"] as? [String],
                   fields.allSatisfy(Self.fields.contains), Set(fields).count == fields.count
@@ -40,13 +53,21 @@ struct StripeActionResponse: CustomStringConvertible {
     }
 
     func authenticationSecret(now: Date = Date()) throws -> String {
-        guard status == "READY", next == "SDK_AUTHORIZE", session == nil,
+        guard status == "READY", next == "SDK_AUTHORIZE", session == nil, intent == nil, authentication == nil,
               let secret, let expiresAt, expiresAt > now else { throw StripeNativeError.invalidResponse }
         return secret
     }
 
+    func authorizationIntent(now: Date = Date()) throws -> String {
+        guard status == "READY", next == "SDK_AUTHORIZE", authentication == .reauthorize,
+              session == nil, secret == nil, let intent, let expiresAt, expiresAt > now
+        else { throw StripeNativeError.invalidResponse }
+        return intent
+    }
+
     func checkoutSecret(session expected: String, now: Date = Date()) throws -> String {
-        guard session == expected, let secret, expiresAt.map({ $0 > now }) ?? true,
+        guard session == expected, intent == nil, authentication == nil,
+              let secret, expiresAt.map({ $0 > now }) ?? true,
               ["REQUIRES_PAYMENT", "QUOTE_READY", "FULFILLMENT_PROCESSING", "FULFILLMENT_COMPLETE", "SUCCEEDED"].contains(status),
               ["CONFIRM_PAYMENT", "NONE", "COMPLETE"].contains(next)
         else { throw StripeNativeError.invalidResponse }
@@ -54,15 +75,21 @@ struct StripeActionResponse: CustomStringConvertible {
     }
 
     enum Submission: Equatable {
-        case notStarted, resumeSession(String), inProgress, submitted, completed, failed, expired, unknown
+        case notStarted(Authentication), resumeSession(String, Authentication), inProgress, submitted, completed, failed, expired, unknown
     }
 
     func submission() throws -> Submission {
-        guard secret == nil, expiresAt == nil else { throw StripeNativeError.invalidResponse }
+        guard secret == nil, expiresAt == nil, intent == nil else { throw StripeNativeError.invalidResponse }
         switch (status, next) {
         case ("READY", "REFRESH_QUOTE"):
-            guard let session else { throw StripeNativeError.invalidResponse }; return .resumeSession(session)
-        case ("NOT_STARTED", "NONE") where session == nil: return .notStarted
+            guard let session, let authentication, authentication != .bootstrap else { throw StripeNativeError.invalidResponse }
+            return .resumeSession(session, authentication)
+        case ("NOT_STARTED", "NONE") where session == nil:
+            guard let authentication else { throw StripeNativeError.invalidResponse }; return .notStarted(authentication)
+        default: break
+        }
+        guard authentication == nil else { throw StripeNativeError.invalidResponse }
+        switch (status, next) {
         case ("IN_PROGRESS", "WAIT_FOR_PROVIDER") where session == nil: return .inProgress
         case ("SUBMITTED", "WAIT_FOR_PAYMENT") where session == nil: return .submitted
         case ("SUCCEEDED", "COMPLETE") where session == nil: return .completed
