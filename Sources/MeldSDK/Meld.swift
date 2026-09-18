@@ -98,13 +98,17 @@ public struct MeldError {
     /// Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be nil.
     public let detail: String?
     public let recoverable: Bool
+    /// Validated shared recovery advice, when available. Does not authorize a new financial attempt.
+    public let headlessError: MeldHeadlessError?
 
-    public init(orderId: String?, code: String, message: String, detail: String? = nil, recoverable: Bool) {
+    public init(orderId: String?, code: String, message: String, detail: String? = nil, recoverable: Bool,
+                headlessError: MeldHeadlessError? = nil) {
         self.orderId = orderId
         self.code = code
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
+        self.headlessError = headlessError
     }
 }
 

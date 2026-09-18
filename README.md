@@ -165,6 +165,22 @@ Unmounting or recreating the handle does not reset them. Unknown, pending, expir
 submitted attempts must be tracked through your backend's canonical order/transaction status.
 `recoverable: false` means this mounted flow has stopped; it does not mean a new charge is safe.
 
+Shared action failures also expose optional `MeldError.headlessError` (`MeldHeadlessError`):
+`version`, typed `category`, typed `recovery`, and `automaticRetryAllowed`. Version 1 always sets
+automatic retry to false. The transport accepts only known category/recovery pairs and explicit
+read operations for `RETRY_READ`; response prose and unknown fields are discarded. Missing or
+invalid metadata becomes `DEPENDENCY_UNAVAILABLE / RETRY_READ` for known reads and
+`OUTCOME_UNKNOWN / READ_STATE` for mutations. Local and legacy surface errors can omit this field.
+
+Follow `recovery` through your backend while retaining the original order/attempt: authenticate the
+relevant Meld authorization, read requirements, read the existing operation state, explicitly retry
+a read, correct a request, or stop. No category proves a payment was never dispatched. Do not
+automatically remount, clear attempt history or create a new order. A Meld authentication failure
+does not trigger vendor reauthorization. Stripe no longer automatically retries a lost payment or
+legal-write response; wallet uncertainty may resolve through one state read, but auth/STOP/
+correction/requirements advice reaches the caller directly. This additive callback field requires
+the coordinated unreleased 0.8 SDK; it introduces no storage or server migration.
+
 A verification response appears after PassKit dismisses, in a visible confirmation and Safari sheet.
 The SDK explains whether verification resumes a held payment or continues an unfunded attempt in a
 hosted checkout. It checks the URL's allowed origin and expiry, opens it once after a user tap, and

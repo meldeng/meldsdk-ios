@@ -69,7 +69,8 @@ final class StripePaymentSession: MeldProviderSession {
             } catch {
                 self.lifetime.ifActive {
                     self.handlers.onError?(MeldError(orderId: self.orderID, code: "PAYMENT_CONTINUATION_UNAVAILABLE",
-                        message: "This payment could not be continued. Review the existing order before trying again.", recoverable: false))
+                        message: "This payment could not be continued. Review the existing order before trying again.",
+                        recoverable: false, headlessError: MeldHeadlessError.from(error)))
                 }
             }
             await self.stop()

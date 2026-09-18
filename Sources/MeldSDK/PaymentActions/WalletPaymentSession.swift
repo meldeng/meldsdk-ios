@@ -74,16 +74,19 @@ final class WalletPaymentSession: MeldProviderSession {
 
     private func apply(_ result: Result<WalletActionResponse, Error>) {
         guard active else { return }
-        guard case .success(let response) = result else {
-            fail("PAYMENT_STATE_UNAVAILABLE", "Payment state is unavailable. Review the existing order before trying another payment.")
+        if case .failure(let error) = result {
+            fail("PAYMENT_STATE_UNAVAILABLE", "Payment state is unavailable. Review the existing order before trying another payment.",
+                 advice: MeldHeadlessError.from(error) ?? .fallback("READ_SUBMISSION"))
             return
         }
+        guard case .success(let response) = result else { return }
         do {
             if response.state != .notStarted { try store.observeSubmission() }
             switch response.state {
             case .notStarted:
                 guard !(try store.record()).submissionStarted else {
-                    fail("PAYMENT_OUTCOME_UNKNOWN", "A payment was already attempted. Review the existing order.")
+                    fail("PAYMENT_OUTCOME_UNKNOWN", "A payment was already attempted. Review the existing order.",
+                         advice: .fallback("SUBMIT_WALLET_PAYMENT"))
                     return
                 }
                 sheetActive = true
@@ -160,7 +163,8 @@ final class WalletPaymentSession: MeldProviderSession {
         client.send("SUBMIT_WALLET_PAYMENT", fields: fields, key: key) { [weak self] result in
             guard let self, self.active else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
             let decoded = Self.decode(result)
-            if case .failure = decoded {
+            if case .failure(let error) = decoded,
+               (MeldHeadlessError.from(error) ?? .fallback("SUBMIT_WALLET_PAYMENT")).recovery == .readState {
                 // A lost or malformed response is ambiguous. Recovery is a read, never another submission.
                 self.client.send("READ_SUBMISSION", fields: [:], key: nil) { [weak self] read in
                     guard let self else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
@@ -201,9 +205,9 @@ final class WalletPaymentSession: MeldProviderSession {
         handlers.onStatusChange?(MeldStatusChange(orderId: orderID, status: .pending, providerStatus: nil, raw: nil))
     }
 
-    private func fail(_ code: String, _ message: String) {
+    private func fail(_ code: String, _ message: String, advice: MeldHeadlessError? = nil) {
         guard active else { return }
         unmount()
-        handlers.onError?(MeldError(orderId: orderID, code: code, message: message, recoverable: false))
+        handlers.onError?(MeldError(orderId: orderID, code: code, message: message, recoverable: false, headlessError: advice))
     }
 }

@@ -2,40 +2,18 @@ import CoreFoundation
 import Foundation
 
 enum PaymentActionError: Error {
-    case invalidDescriptor, invalidRequest, invalidResponse, transport, http(Int), storage, alreadyAttempted
-    case action(PaymentActionFailureCode)
+    case invalidDescriptor, invalidRequest, invalidResponse, transport, storage, alreadyAttempted
+    case headless(MeldHeadlessError)
 }
 
-/// Only the public action error vocabulary is retained; response bodies are never attached.
-enum PaymentActionFailureCode: String {
-    case invalidRequest = "INVALID_REQUEST", authorizationRequired = "AUTHORIZATION_REQUIRED"
-    case stateNotFound = "STATE_NOT_FOUND", requestConflict = "REQUEST_CONFLICT", orderStateChanged = "ORDER_STATE_CHANGED"
-    case concurrentStateChange = "CONCURRENT_STATE_CHANGE", operationInFlight = "OPERATION_IN_FLIGHT"
-    case providerRejected = "PROVIDER_REJECTED", providerRateLimited = "PROVIDER_RATE_LIMITED"
-    case providerUnavailable = "PROVIDER_UNAVAILABLE", invalidProviderResponse = "INVALID_PROVIDER_RESPONSE"
-    case outcomeUnknown = "OUTCOME_UNKNOWN"
-
-    var httpStatus: Int {
-        switch self {
-        case .invalidRequest: return 400
-        case .authorizationRequired: return 401
-        case .stateNotFound: return 404
-        case .requestConflict, .orderStateChanged, .concurrentStateChange: return 409
-        case .operationInFlight: return 425
-        case .providerRejected: return 422
-        case .providerRateLimited: return 429
-        case .providerUnavailable, .invalidProviderResponse: return 502
-        case .outcomeUnknown: return 503
-        }
-    }
-
-    static func decode(_ data: Data?, status: Int) -> PaymentActionError {
+/// Only the public recovery vocabulary is retained; response bodies are never attached.
+enum PaymentActionFailure {
+    static func decode(_ data: Data?, operation: String) -> PaymentActionError {
         guard let data, data.count <= 65536,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              PaymentActionJSON.integer(json["version"]) == 1,
-              let raw = json["code"] as? String, let code = Self(rawValue: raw), code.httpStatus == status
-        else { return .http(status) }
-        return .action(code)
+              let advice = MeldHeadlessError.decode(json["headlessError"], operation: operation)
+        else { return .headless(.fallback(operation)) }
+        return .headless(advice)
     }
 }
 
@@ -146,19 +124,23 @@ final class PaymentActionClient: PaymentActionSending {
               completion: @escaping (Result<[String: Any], Error>) -> Void) {
         let request: URLRequest
         do { request = try descriptor.request(operation: operation, fields: fields, key: key) }
-        catch { DispatchQueue.main.async { completion(.failure(PaymentActionError.invalidRequest)) }; return }
+        catch {
+            let failure = PaymentActionError.headless(MeldHeadlessError(category: .invalidRequest, recovery: .correctRequest))
+            DispatchQueue.main.async { completion(.failure(failure)) }
+            return
+        }
         session.dataTask(with: request) { data, response, error in
             let result: Result<[String: Any], Error>
-            if error != nil { result = .failure(PaymentActionError.transport) }
+            if error != nil { result = .failure(PaymentActionError.headless(.fallback(operation))) }
             else if let response = response as? HTTPURLResponse {
                 if !(200..<300).contains(response.statusCode) {
-                    result = .failure(PaymentActionFailureCode.decode(data, status: response.statusCode))
+                    result = .failure(PaymentActionFailure.decode(data, operation: operation))
                 }
                 else if let data, data.count <= 65536,
                         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                         PaymentActionJSON.integer(json["version"]) == 1 { result = .success(json) }
-                else { result = .failure(PaymentActionError.invalidResponse) }
-            } else { result = .failure(PaymentActionError.invalidResponse) }
+                else { result = .failure(PaymentActionError.headless(.fallback(operation))) }
+            } else { result = .failure(PaymentActionError.headless(.fallback(operation))) }
             DispatchQueue.main.async { completion(result) }
         }.resume()
     }

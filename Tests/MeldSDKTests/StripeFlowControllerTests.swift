@@ -61,18 +61,17 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
-    func testFailedReceiptWriteNeverOpensIdentityOrPaymentAndRetriesTheSameKey() async throws {
+    func testFailedReceiptWriteNeverOpensIdentityOrPaymentAndIsNotReplayed() async throws {
         let h = try FlowHarness()
         h.client.legalWriteFailure = PaymentActionError.transport
         h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC")]
         do { _ = try await h.flow.run(); XCTFail("Receipt must be durable before collection") }
-        catch PaymentActionError.transport {}
+        catch { XCTAssertEqual(MeldHeadlessError.from(error), .fallback("RECORD_LEGAL_EVIDENCE")) }
         XCTAssertEqual(h.forms.calls, ["email", "disclosure"])
         XCTAssertFalse(h.driver.calls.contains("attachIdentity"))
         XCTAssertFalse(h.store.value.submissionStarted)
         let writes = h.client.calls.filter { $0.operation == "RECORD_LEGAL_EVIDENCE" }
-        XCTAssertEqual(writes.count, 2)
-        XCTAssertEqual(writes.first?.key, writes.last?.key)
+        XCTAssertEqual(writes.count, 1)
         await h.flow.close()
     }
 
@@ -128,32 +127,62 @@ final class StripeFlowControllerTests: XCTestCase {
         await malformed.flow.close()
     }
 
-    func testLostCreateResponseRetriesTheSameTokenAndMutationKey() async throws {
+    func testLostCreateResponseRetainsTheAttemptWithoutReplayingItsToken() async throws {
         let h = try FlowHarness()
-        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), .failure(PaymentActionError.transport),
-            FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
-        _ = try await h.flow.run()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), .failure(PaymentActionError.transport)]
+        do { _ = try await h.flow.run(); XCTFail("Expected unknown outcome") }
+        catch { XCTAssertEqual(MeldHeadlessError.from(error), .fallback("CREATE_PAYMENT_SESSION")) }
         let creates = h.client.calls.filter { $0.operation == "CREATE_PAYMENT_SESSION" }
-        XCTAssertEqual(creates.count, 2)
-        XCTAssertEqual(creates[0].key, creates[1].key)
-        XCTAssertEqual(creates[0].fields["paymentToken"] as? String, creates[1].fields["paymentToken"] as? String)
+        XCTAssertEqual(creates.count, 1)
         XCTAssertEqual(creates[0].key, h.store.value.submissionKey)
+        XCTAssertTrue(h.store.value.submissionStarted)
         XCTAssertEqual(h.driver.calls.filter { $0 == "createPaymentToken" }.count, 1)
         await h.flow.close()
     }
 
-    func testActualCheckoutCallbacksGetDistinctKeysAndTransportRetriesReuseTheirPair() async throws {
+    func testSuccessfulCheckoutCallbacksGetDistinctInvocationKeys() async throws {
         let h = try FlowHarness()
         h.driver.checkoutCallbacks = 2
         h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(),
-            .failure(PaymentActionError.transport), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+            FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
         _ = try await h.flow.run()
         let calls = h.client.calls.filter { $0.operation == "CONFIRM_PAYMENT" }
-        XCTAssertEqual(calls.count, 3)
-        XCTAssertEqual(calls[0].key, calls[1].key)
-        XCTAssertEqual(calls[0].fields["callbackInvocationId"] as? String, calls[1].fields["callbackInvocationId"] as? String)
-        XCTAssertNotEqual(calls[1].key, calls[2].key)
-        XCTAssertNotEqual(calls[1].fields["callbackInvocationId"] as? String, calls[2].fields["callbackInvocationId"] as? String)
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertNotEqual(calls[0].key, calls[1].key)
+        XCTAssertNotEqual(calls[0].fields["callbackInvocationId"] as? String, calls[1].fields["callbackInvocationId"] as? String)
+        await h.flow.close()
+    }
+
+    func testCheckoutFailuresSurviveSdkWrappingSwallowingAndRepeatedCallbacks() async throws {
+        for swallow in [false, true] {
+            for advice in [MeldHeadlessError(category: .authenticationRequired, recovery: .authenticate),
+                           .init(category: .requirementRequired, recovery: .readRequirements),
+                           .init(category: .orderRejected, recovery: .stop), .fallback("CONFIRM_PAYMENT")] {
+                let h = try FlowHarness()
+                h.driver.swallowCheckoutError = swallow
+                h.driver.checkoutCallbacks = 2
+                h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(),
+                    .failure(PaymentActionError.headless(advice))]
+                do { _ = try await h.flow.run(); XCTFail("A callback failure cannot become success") }
+                catch { XCTAssertEqual(MeldHeadlessError.from(error), advice) }
+                XCTAssertEqual(h.client.calls.filter { $0.operation == "CONFIRM_PAYMENT" }.count, 1)
+                XCTAssertEqual(h.client.calls.filter { $0.operation == "PREPARE_CUSTOMER_AUTHORIZATION" }.count, 1)
+                XCTAssertEqual(h.client.calls.filter { $0.operation == "READ_SUBMISSION" }.count, 1)
+                XCTAssertFalse(h.client.calls.contains { $0.operation == "REFRESH_QUOTE" })
+                await h.flow.close()
+            }
+        }
+    }
+
+    func testMeldAuthenticationFailureDoesNotOpenVendorAuthorization() async throws {
+        let h = try FlowHarness()
+        let advice = MeldHeadlessError(category: .authenticationRequired, recovery: .authenticate)
+        h.client.responses = [FlowHarness.resume(), .failure(PaymentActionError.headless(advice))]
+        do { _ = try await h.flow.run(); XCTFail("Expected authentication advice") }
+        catch { XCTAssertEqual(MeldHeadlessError.from(error), advice) }
+        XCTAssertTrue(h.forms.calls.isEmpty)
+        XCTAssertTrue(h.driver.calls.isEmpty)
+        XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "CREATE_CUSTOMER_AUTH_TOKEN"])
         await h.flow.close()
     }
 
@@ -242,6 +271,32 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(driver.logouts, 1)
         XCTAssertEqual(terminal, 0)
         XCTAssertEqual(client.calls.map(\.operation), ["READ_SUBMISSION"])
+    }
+
+    func testMountedSessionDeliversRecoveryMetadataWithSafeLocalText() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let client = FlowClient(), driver = FlowDriver()
+        let advice = MeldHeadlessError(category: .authenticationRequired, recovery: .authenticate)
+        client.responses = [.failure(PaymentActionError.headless(advice))]
+        var errors: [MeldError] = []
+        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
+            handlers: MeldEventHandlers(onError: { errors.append($0) }), client: client, store: FlowStore(),
+            factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
+        defer { session.unmount() }
+        for _ in 0..<100 {
+            if errors.count == 1, root.presentedViewController == nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.headlessError, advice)
+        XCTAssertEqual(errors.first?.code, "PAYMENT_CONTINUATION_UNAVAILABLE")
+        XCTAssertNil(errors.first?.detail)
+        XCTAssertEqual(errors.first?.recoverable, false)
+        XCTAssertTrue(driver.calls.isEmpty)
     }
 
     func testUnmountFromReadyHandlerPreventsStateReadAndSdkCreation() async throws {
@@ -402,6 +457,7 @@ private final class FlowDriver: StripeSdkDriving {
     var calls: [String] = []
     var hasAccountResult = true, failAuthentication = false, updateAddress = false, cancelCollection = false
     var checkoutCallbacks = 1, logouts = 0
+    var swallowCheckoutError = false
     var callbackSession: String?
     var onHasAccount: (() -> Void)?
     var collectedRequest: PKPaymentRequest?
@@ -422,7 +478,12 @@ private final class FlowDriver: StripeSdkDriving {
     func createPaymentToken() async throws -> String { calls.append("createPaymentToken"); return "cpt_synthetic" }
     func checkout(session: String, from presenter: UIViewController, secret: @escaping @MainActor (String) async throws -> String) async throws {
         calls.append("checkout")
-        for _ in 0..<checkoutCallbacks { _ = try await secret(callbackSession ?? session) }
+        for _ in 0..<checkoutCallbacks {
+            do { _ = try await secret(callbackSession ?? session) }
+            catch {
+                if !swallowCheckoutError { throw StripeNativeError.actionRequired }
+            }
+        }
     }
     func logOut() async throws { logouts += 1 }
 }

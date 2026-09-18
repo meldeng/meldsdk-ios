@@ -111,7 +111,7 @@ enum StripeNativeValue {
     }
 }
 
-/// One actual SDK checkout callback owns one pair. A transport retry must reuse this value.
+/// One actual SDK checkout callback owns one pair. A failed callback never authorizes an automatic replay.
 struct StripeCheckoutInvocation: CustomStringConvertible {
     let callbackID = UUID()
     let idempotencyKey = UUID()

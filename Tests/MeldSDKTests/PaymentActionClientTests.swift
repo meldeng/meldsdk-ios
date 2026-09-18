@@ -151,24 +151,29 @@ final class PaymentActionClientTests: XCTestCase {
         let done = expectation(description: "error")
         client.send("READ_SUBMISSION") { result in
             guard case .failure(let error) = result else { XCTFail("Expected failure"); done.fulfill(); return }
-            XCTAssertEqual(String(describing: error), "http(400)")
+            XCTAssertEqual(MeldHeadlessError.from(error), .fallback("READ_SUBMISSION"))
+            XCTAssertFalse(String(describing: error).contains("synthetic-sensitive-response"))
             done.fulfill()
         }
         wait(for: [done], timeout: 3)
     }
 
-    func testNormalizedErrorsRequireKnownVersionCodeAndMatchingHttpStatus() throws {
-        let valid = try JSONSerialization.data(withJSONObject: ["version": 1, "code": "AUTHORIZATION_REQUIRED", "secret": "synthetic-private"])
-        guard case .action(.authorizationRequired) = PaymentActionFailureCode.decode(valid, status: 401) else {
-            return XCTFail("Expected only the normalized code")
+    func testTransportPreservesSharedAdviceWithoutAnActionEnvelopeOrProviderProse() throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ActionURLProtocol.self]
+        ActionURLProtocol.status = 401
+        ActionURLProtocol.json = ["code": "UNAUTHORIZED", "message": "synthetic-private",
+                                  "headlessError": HeadlessErrorFixtures.json("AUTHENTICATION_REQUIRED", "AUTHENTICATE")]
+        let client = PaymentActionClient(descriptor: try descriptor(), configuration: configuration)
+        defer { client.finish() }
+        let done = expectation(description: "shared failure")
+        client.send("SUBMIT_WALLET_PAYMENT", key: UUID()) { result in
+            guard case .failure(let error) = result else { XCTFail("Expected failure"); done.fulfill(); return }
+            XCTAssertEqual(MeldHeadlessError.from(error)?.recovery, .authenticate)
+            XCTAssertFalse(String(describing: error).contains("synthetic-private"))
+            done.fulfill()
         }
-        for json: [String: Any] in [["version": true, "code": "AUTHORIZATION_REQUIRED"],
-                                    ["version": 2, "code": "AUTHORIZATION_REQUIRED"],
-                                    ["version": 1, "code": "unknown-sensitive-value"]] {
-            let data = try JSONSerialization.data(withJSONObject: json)
-            XCTAssertEqual(String(describing: PaymentActionFailureCode.decode(data, status: 401)), "http(401)")
-        }
-        XCTAssertEqual(String(describing: PaymentActionFailureCode.decode(valid, status: 500)), "http(500)")
+        wait(for: [done], timeout: 3)
     }
 
     private func descriptor(action: [String: Any] = [:]) throws -> PaymentActionDescriptor {

@@ -115,8 +115,7 @@ final class StripeFlowController {
                 return
             } catch StripeNativeError.authorizationRequired {
                 // The backend still owns the customer identity and authorization scope.
-            } catch PaymentActionError.action(.authorizationRequired) {
-                // Expired Meld bearers will also reject preparation; they cannot be renewed here.
+                // Expired Meld bearers propagate to the caller; vendor consent cannot renew them.
             }
         }
         let email = try await forms.email()
@@ -177,39 +176,35 @@ final class StripeFlowController {
                 guard let runtime else { throw StripeNativeError.unavailable }
                 forms.showProgress("Confirm your payment")
                 var followUp: StripeActionResponse?
-                var authorizationRequired = false
+                var callbackFailure: Error?
                 do {
                     try await runtime.checkout(session: expected, from: forms.presenter) { [weak self] requested in
                         guard let self else { throw StripeNativeError.cancelled }
-                        guard followUp == nil, !authorizationRequired else { throw StripeNativeError.actionRequired }
+                        if let callbackFailure { throw callbackFailure }
+                        guard followUp == nil else { throw StripeNativeError.actionRequired }
                         let invocation = StripeCheckoutInvocation()
-                        let response: StripeActionResponse
                         do {
-                            response = try await self.action("CONFIRM_PAYMENT", fields: invocation.fields, key: invocation.idempotencyKey)
-                        } catch PaymentActionError.action(.authorizationRequired) {
-                            authorizationRequired = true
-                            throw StripeNativeError.actionRequired
+                            let response = try await self.action("CONFIRM_PAYMENT", fields: invocation.fields, key: invocation.idempotencyKey)
+                            guard response.session == requested else { throw StripeNativeError.invalidResponse }
+                            if ["SDK_COLLECT_KYC", "SDK_VERIFY_IDENTITY", "SDK_REGISTER_WALLET", "REFRESH_QUOTE"].contains(response.next) {
+                                followUp = response
+                                throw StripeNativeError.actionRequired
+                            }
+                            return try response.checkoutSecret(session: requested, now: self.now())
+                        } catch {
+                            if followUp == nil { callbackFailure = MeldHeadlessError.failure(error, operation: "CONFIRM_PAYMENT") }
+                            throw callbackFailure ?? error
                         }
-                        guard response.session == requested else { throw StripeNativeError.invalidResponse }
-                        if ["SDK_COLLECT_KYC", "SDK_VERIFY_IDENTITY", "SDK_REGISTER_WALLET", "REFRESH_QUOTE"].contains(response.next) {
-                            followUp = response
-                            throw StripeNativeError.actionRequired
-                        }
-                        return try response.checkoutSecret(session: requested, now: self.now())
                     }
                 } catch {
                     try check()
+                    if let callbackFailure { throw callbackFailure }
                     if let followUp { result = followUp; continue }
-                    if authorizationRequired {
-                        try await authenticate(.reauthorize)
-                        result = try await action("REFRESH_QUOTE", key: UUID())
-                        continue
-                    }
                     throw error
                 }
                 // Even a provider that swallows a callback error cannot turn it into success.
+                if let callbackFailure { throw callbackFailure }
                 if let followUp { result = followUp; continue }
-                if authorizationRequired { throw StripeNativeError.authorizationRequired }
                 return try observe(await action("READ_SUBMISSION").submission())
             case ("REJECTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
                 if result.next == "SDK_VERIFY_IDENTITY" {
@@ -252,7 +247,8 @@ final class StripeFlowController {
     }
 
     private func action(_ operation: String, fields: [String: Any] = [:], key: UUID? = nil) async throws -> StripeActionResponse {
-        try StripeActionResponse(await send(operation, fields: fields, key: key))
+        do { return try StripeActionResponse(await send(operation, fields: fields, key: key)) }
+        catch { throw MeldHeadlessError.failure(error, operation: operation) }
     }
 
     private func requireIdentityConsent() async throws {
@@ -265,18 +261,18 @@ final class StripeFlowController {
     }
 
     private func send(_ operation: String, fields: [String: Any], key: UUID?) async throws -> [String: Any] {
-        // Retry only a transport failure, once, with the identical body and mutation identity.
-        for attempt in 0..<2 {
+        // A lost response remains ambiguous even with a stable key. Recovery never replays a mutation automatically.
+        try check()
+        do {
+            let json: [String: Any] = try await withCheckedThrowingContinuation { continuation in
+                client.send(operation, fields: fields, key: key) { continuation.resume(with: $0) }
+            }
             try check()
-            do {
-                let json: [String: Any] = try await withCheckedThrowingContinuation { continuation in
-                    client.send(operation, fields: fields, key: key) { continuation.resume(with: $0) }
-                }
-                try check()
-                return json
-            } catch PaymentActionError.transport where attempt == 0 { continue }
+            return json
+        } catch {
+            try check()
+            throw MeldHeadlessError.failure(error, operation: operation)
         }
-        throw PaymentActionError.transport
     }
 
     private func check() throws {

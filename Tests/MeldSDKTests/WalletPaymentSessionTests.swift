@@ -2,6 +2,42 @@ import XCTest
 @testable import MeldSDK
 
 final class WalletPaymentSessionTests: XCTestCase {
+    func testAuthoritativeSubmissionAdviceReachesCallbackWithoutARecoveryRequest() throws {
+        for advice in [MeldHeadlessError(category: .authenticationRequired, recovery: .authenticate),
+                       .init(category: .invalidRequest, recovery: .correctRequest),
+                       .init(category: .requirementRequired, recovery: .readRequirements),
+                       .init(category: .orderRejected, recovery: .stop)] {
+            let flow = try WalletHarness()
+            defer { flow.session.unmount() }
+            flow.session.start()
+            flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+            flow.authorize()
+            flow.client.complete(1, .failure(PaymentActionError.headless(advice)))
+            XCTAssertTrue(flow.errors.isEmpty, "Wait for the wallet sheet to close")
+            flow.sheetFinished?()
+            XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION", "SUBMIT_WALLET_PAYMENT"])
+            XCTAssertEqual(flow.errors.first?.headlessError, advice)
+            XCTAssertFalse(try XCTUnwrap(flow.errors.first).recoverable)
+            XCTAssertTrue(flow.store.value.submissionStarted)
+            XCTAssertEqual(flow.outcomes, [false])
+        }
+    }
+
+    func testRecoveryReadFailurePreservesItsAuthoritativeAdvice() throws {
+        let flow = try WalletHarness()
+        defer { flow.session.unmount() }
+        let advice = MeldHeadlessError(category: .authenticationRequired, recovery: .authenticate)
+        flow.session.start()
+        flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+        flow.authorize()
+        flow.client.complete(1, .failure(PaymentActionError.headless(.fallback("SUBMIT_WALLET_PAYMENT"))))
+        flow.client.complete(2, .failure(PaymentActionError.headless(advice)))
+        flow.sheetFinished?()
+        XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION", "SUBMIT_WALLET_PAYMENT", "READ_SUBMISSION"])
+        XCTAssertEqual(flow.errors.first?.headlessError, advice)
+        XCTAssertTrue(flow.store.value.submissionStarted)
+    }
+
     func testPreflightThenExactlyOneSubmissionWaitsForSheetDismissal() throws {
         let flow = try WalletHarness()
         defer { flow.session.unmount() }
