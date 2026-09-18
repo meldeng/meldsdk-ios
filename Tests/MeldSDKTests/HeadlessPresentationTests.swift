@@ -12,8 +12,13 @@ final class HeadlessPresentationTests: XCTestCase {
         var json: [String: Any] = [
             "id": "test-order", "paymentMethodType": method,
             "payload": ["serviceProvider": provider], "paymentMethodResponseDetails": details ?? nativeDetails,
+            "paymentActions": ["version": 1, "endpoint": "/crypto/order/headless/onramp/\(provider)/test-order/actions",
+                               "bearerTokenPointer": "/paymentMethodResponseDetails/sessionToken",
+                               "operations": [["operation": "READ_SUBMISSION", "idempotencyKeyRequired": false],
+                                              ["operation": "SUBMIT_WALLET_PAYMENT", "idempotencyKeyRequired": true]]],
         ]
         if let presentation { json["headlessPresentation"] = presentation }
+        else { json.removeValue(forKey: "paymentActions") }
         return try MeldOrder.from(jsonData: JSONSerialization.data(withJSONObject: json))
     }
 
@@ -28,10 +33,7 @@ final class HeadlessPresentationTests: XCTestCase {
         XCTAssertEqual(order.headlessPresentation?.version, 1)
         XCTAssertTrue(Meld.adapter(for: order) is MercuryoApplePayAdapter)
         XCTAssertEqual(Meld.capabilities(for: order).surface, "native-applepay")
-        // The resolver succeeded; mount reaches payload/context validation without opening a sheet.
-        XCTAssertThrowsError(try Meld.mount(order)) {
-            guard case MeldApplePayError.invalidOrder = $0 else { return XCTFail("Expected context validation") }
-        }
+        // Mount reads the canonical action state before deciding whether a new sheet is needed.
     }
 
     func testBanxaProtocolDoesNotNeedProviderNameOrRegistryPrecedence() throws {

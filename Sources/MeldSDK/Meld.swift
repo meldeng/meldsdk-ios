@@ -17,8 +17,8 @@ public enum MeldEnvironment: String {
 }
 
 /// The HeadlessOrderResponse from `POST /crypto/order/headless`, passed verbatim. The fields the
-/// SDK reads are exposed directly; the whole `paymentMethodResponseDetails` is also kept as `raw`
-/// so provider-specific fields (a session token, etc.) stay available without modeling each one.
+/// SDK reads are exposed directly. The original response is retained internally to resolve
+/// server-declared action credentials without duplicating provider-specific field mappings.
 public struct MeldOrder {
     public let id: String?
     public let paymentMethodType: String?
@@ -27,6 +27,7 @@ public struct MeldOrder {
     /// declared protocol dispatch does not use provider identity.
     public let serviceProvider: String?
     public let paymentMethodResponseDetails: Details?
+    let raw: [String: Any]
     let presentationDeclaration: HeadlessPresentationDeclaration
 
     /// Server-declared protocol metadata, including well-formed values this binary cannot present.
@@ -64,6 +65,7 @@ public struct MeldOrder {
             paymentMethodType: dict["paymentMethodType"] as? String,
             serviceProvider: serviceProvider,
             paymentMethodResponseDetails: details,
+            raw: dict,
             presentationDeclaration: .decode(order: dict))
     }
 
@@ -202,11 +204,12 @@ public enum Meld {
     ///
     /// - **Embedded widget** (e.g. Mercuryo card): pass the `UIView` you own as `into:`.
     ///   `Meld.mount(order, into: containerView, handlers:)`
-    /// - **Native Apple Pay sheet**: pass `applePay:` with the amount/currency/country/wallet/IP the
-    ///   order doesn't carry; `into:` is ignored. `Meld.mount(order, applePay: request, handlers:)`
+    /// - **Native Apple Pay sheet**: pass `applePay:` with the order's amount/currency and billing
+    ///   email fallback. `Meld.mount(order, applePay: request, handlers:)`
     ///
     /// Returns a handle; `handle.unmount()` tears down the surface (removes the widget or dismisses
-    /// the sheet). Each surface validates the inputs it needs and throws if they're missing.
+    /// the sheet). Call on the main thread. Static payload errors throw; state-dependent validation
+    /// (after an action-state read) reports through `onError`.
     @discardableResult
     public static func mount(
         _ order: MeldOrder,

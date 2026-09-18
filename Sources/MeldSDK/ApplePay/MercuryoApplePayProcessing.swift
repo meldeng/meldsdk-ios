@@ -1,5 +1,4 @@
 import Foundation
-import os.log
 
 // Native Apple Pay processing for Mercuryo. The SDK presents the PassKit sheet, then drives the
 // order's session-scoped endpoint `POST /crypto/session/mercuryo/apple-pay/process`, authenticated
@@ -92,7 +91,6 @@ enum ApplePayResponseInterpreter {
         // transport status. Treat a non-2xx transport status OR a provider error code as a failure.
         let providerStatus = json?["status"] as? Int
         let providerCode = json?["code"] as? String
-        let message = json?["message"] as? String
         let data = json?["data"] as? [String: Any]
 
         let transportFailed = !(200..<300).contains(httpStatus)
@@ -100,19 +98,10 @@ enum ApplePayResponseInterpreter {
             || (providerCode?.isEmpty == false)
 
         if transportFailed || providerFailed {
-            let reason = message
-                ?? (data?["reason"] as? String)
-                ?? "Apple Pay payment was not accepted"
-            // Surface the raw response envelope (minus huge fields) so integrators can see which
-            // field the server rejected — a generic "Bad request" otherwise hides the cause.
-            let detail = json
-                .flatMap { try? JSONSerialization.data(withJSONObject: $0) }
-                .flatMap { String(data: $0, encoding: .utf8) }
             let error = MeldError(
                 orderId: orderId,
-                code: providerCode ?? String(providerStatus ?? httpStatus),
-                message: reason,
-                detail: detail,
+                code: "PAYMENT_NOT_ACCEPTED",
+                message: "The payment was not accepted. Review the existing order before starting another payment.",
                 recoverable: false)
             return ApplePayProcessOutcome(events: [.error(error)], succeeded: false)
         }
@@ -121,23 +110,29 @@ enum ApplePayResponseInterpreter {
         // flow; the normalized status drives the rest. A terminal failed/cancelled status that
         // still arrives on a 2xx is mapped through the same rules as the card adapter.
         let rawStatus = (data?["status"] as? String) ?? (data?["payment_status"] as? String)
+        guard let rawStatus, statusMap[rawStatus.lowercased()] != nil
+                || ["new", "pending", "created", "processing"].contains(rawStatus.lowercased()) else {
+            return ApplePayProcessOutcome(events: [.error(MeldError(orderId: orderId, code: "PAYMENT_OUTCOME_UNKNOWN",
+                message: "Payment outcome is unknown. Track the existing order without submitting again.",
+                recoverable: false))], succeeded: false)
+        }
         let status = normalize(rawStatus)
         var events: [MeldEvent] = [
-            .paymentSubmitted,
             .statusChange(MeldStatusChange(
-                orderId: orderId, status: status, providerStatus: rawStatus, raw: data ?? json)),
+                orderId: orderId, status: status, providerStatus: statusMap[rawStatus.lowercased()] != nil ? rawStatus : nil, raw: nil)),
         ]
         switch status {
         case .failed:
             events.append(.error(MeldError(
-                orderId: orderId, code: rawStatus ?? "failed",
-                message: "Mercuryo reported terminal status: \(rawStatus ?? "failed")",
+                orderId: orderId, code: rawStatus,
+                message: "The provider reported a failed payment attempt. Review the existing order.",
                 recoverable: false)))
             return ApplePayProcessOutcome(events: events, succeeded: false)
         case .cancelled:
             events.append(.cancel)
             return ApplePayProcessOutcome(events: events, succeeded: false)
         default:
+            events.insert(.paymentSubmitted, at: 0)
             return ApplePayProcessOutcome(events: events, succeeded: true)
         }
     }
@@ -145,14 +140,26 @@ enum ApplePayResponseInterpreter {
 
 /// Thin client for the session-scoped `/process` endpoint on Meld's public crypto API. Auth is the
 /// order's `sessionToken` in the `X-Crypto-Session-Token` header — the SDK never holds an API key.
-struct MercuryoApplePayClient {
+final class MercuryoApplePayClient {
     static let processPath = "/crypto/session/mercuryo/apple-pay/process"
     static let tokenHeader = "X-Crypto-Session-Token"
-    static let log = Logger(subsystem: "io.meld.sdk", category: "ApplePay")
 
     let environment: MeldEnvironment
     let sessionToken: String
-    var urlSession: URLSession = .shared
+    private let urlSession: URLSession
+
+    init(environment: MeldEnvironment, sessionToken: String) {
+        self.environment = environment
+        self.sessionToken = sessionToken
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        urlSession = URLSession(configuration: configuration, delegate: PaymentActionRedirectPolicy(), delegateQueue: nil)
+    }
+
+    func finish() { urlSession.finishTasksAndInvalidate() }
+    deinit { urlSession.finishTasksAndInvalidate() }
 
     /// Public crypto API host per environment (same host integrators hit for `/crypto/order/headless`).
     static func baseURL(for environment: MeldEnvironment) -> String {
@@ -164,14 +171,16 @@ struct MercuryoApplePayClient {
     }
 
     /// POST the process body. On a delivered HTTP response, returns `(status, parsedJSON)`. A
-    /// transport/encoding failure returns `.failure` (the caller maps it to a recoverable error).
+    /// transport/encoding failure returns `.failure`; callers must not retry an ambiguous payment.
     func process(body: [String: Any], completion: @escaping (Result<(Int, [String: Any]?), Error>) -> Void) {
         guard let url = URL(string: Self.baseURL(for: environment) + Self.processPath) else {
             completion(.failure(MeldApplePayError.processingFailed("Invalid Apple Pay process URL")))
             return
         }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "POST"
+        request.httpShouldHandleCookies = false
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(sessionToken, forHTTPHeaderField: Self.tokenHeader)
         do {
@@ -181,15 +190,11 @@ struct MercuryoApplePayClient {
             return
         }
         urlSession.dataTask(with: request) { data, response, error in
-            if let error {
-                completion(.failure(error))
+            if error != nil {
+                completion(.failure(PaymentActionError.transport))
                 return
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if !(200..<300).contains(status) {
-                let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? "<no body>"
-                Self.log.debug("apple-pay /process -> \(status, privacy: .public): \(body, privacy: .public)")
-            }
             let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             completion(.success((status, json)))
         }.resume()

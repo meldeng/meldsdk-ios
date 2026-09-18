@@ -80,8 +80,8 @@ handle.unmount()
 | `onReady` | Widget mounted & interactive | Hide spinner |
 | `onPaymentSubmitted` | User finished the provider payment flow — **exactly once per mount** (UX hint only) | Unmount, show "processing" |
 | `onStatusChange` | Order status changed; `status` is `pending` \| `completed` \| `failed` \| `cancelled` | React to status; `completed` = provider "order complete" (still not settlement) |
-| `onCancel` | User cancelled | Show retry CTA |
-| `onError` | Load failure or terminal `failed` status | Show error; `recoverable` says retry vs. new order |
+| `onCancel` | User dismissed the payment surface | Keep the existing order; inspect its status before offering another payment |
+| `onError` | The flow cannot continue | Show the safe message; `recoverable: false` does not authorize a new order or charge |
 
 `onPaymentSubmitted` fires once and only once, however the provider signals it. Some send a
 "payment finished" message and never a status; some send `completed` and never a finished message;
@@ -98,30 +98,23 @@ an app driving several orders at once can tell them apart.
 
 ## Native Apple Pay
 
-When your backend creates an order with `paymentMethodType: "APPLE_PAY"`, the order isn't an
-embeddable widget — it's a native Apple Pay sheet. It's the **same `Meld.mount`** as the card
-widget; the order selects the surface. You pass `applePay:` instead of `into:` (there's no view to
-mount into). `Meld.capabilities(for: order)` reports `surface == "native-applepay"` and
+For an Apple Pay order declaring `SYSTEM_WALLET_TOKEN / MELD_WALLET_TOKEN` v1, use the
+**same `Meld.mount`** as the card widget. The order selects the surface. Pass `applePay:` with
+the sheet inputs. Other Apple Pay protocols can require a hosted view or a vendor SDK. `Meld.capabilities(for: order)` reports `surface == "native-applepay"` and
 `embeddable == false`.
 
 The order carries the `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`. You supply
-what the sheet and the provider need that the order doesn't carry — the amount/currency/country from
-the quote you created the order against, the destination wallet, and the end-user IP:
+the amount and currency from the quote used to create that order, a display label, and a fallback
+email if the wallet does not supply one. The new action contract uses the order's server-bound
+destination wallet and client IP; those values are not sent again by the SDK:
 
 ```swift
 import MeldSDK
 
-guard Meld.canPresentApplePay() else {
-    // No card provisioned or Apple Pay restricted — fall back to the card flow.
-    return
-}
-
 let handle = try Meld.mount(order, applePay: MeldApplePayRequest(
     amount: 15.00,
     currencyCode: "USD",
-    countryCode: "US",
-    walletAddress: "bc1q…",
-    clientIpAddress: endUserPublicIP,         // same IP constraint as order creation
+    email: "customer@example.com",          // fallback when PassKit omits the email
     summaryItemLabel: "Acme — Buy BTC"
 ), handlers: MeldEventHandlers(
     onReady:            { _ in /* sheet presented */ },
@@ -134,12 +127,33 @@ let handle = try Meld.mount(order, applePay: MeldApplePayRequest(
 // handle.unmount() dismisses the sheet if you need to tear it down early.
 ```
 
+Call mounting and teardown on the main thread. `Meld.canPresentApplePay()` can gate offering a new
+wallet payment; it must not prevent recovery of an existing submitted or verification-required order.
+For those states, the SDK reads the existing attempt without needing a new wallet sheet or request.
+
 The event model is identical to the card flow (see [Events](#events)) — `onReady` /
 `onPaymentSubmitted` / `onStatusChange` / `onCancel` / `onError`, with the same normalized `status`.
-The SDK builds the `PKPaymentRequest`, presents the sheet, and on authorization posts the encrypted
-Apple Pay token to the order's session-scoped process endpoint — **authenticated with the order's
-session token, never an API key**. It transports only the encrypted token and the billing
-name/address Apple returns; it never sees a PAN. The same event model and settlement rule apply.
+The SDK reads `READ_SUBMISSION` before presenting PassKit. Only `NOT_STARTED / NONE` with no
+local attempt permits a new sheet. It sends the encrypted token and billing details through
+`SUBMIT_WALLET_PAYMENT`, using the order's declared endpoint and scoped bearer. No integrator API
+key reaches the SDK. A lost or malformed submission response triggers a read, never a second submission.
+
+The SDK persists only a mutation UUID and submission/verification flags in the app's Keychain.
+Unmounting or recreating the handle does not reset them. Unknown, pending, expired or previously
+submitted attempts must be tracked through your backend's canonical order/transaction status.
+`recoverable: false` means this mounted flow has stopped; it does not mean a new charge is safe.
+
+A verification response appears after PassKit dismisses, in a visible confirmation and Safari sheet.
+The SDK explains whether verification resumes a held payment or continues an unfunded attempt in a
+hosted checkout. It checks the URL's allowed origin and expiry, opens it once after a user tap, and
+reads payment state after the browser closes. Cancelling the confirmation does not open or reload it.
+Neither disposition creates another order or presents another native payment sheet. A PassKit checkmark,
+browser dismissal or SDK event does not establish settlement.
+
+For historical orders with neither presentation nor action metadata, the compatibility path uses the
+legacy session endpoint. These orders still need `walletAddress` and `clientIpAddress` in
+`MeldApplePayRequest`. Ambiguous legacy outcomes are not retried. A declared wallet protocol requires
+a valid `paymentActions` descriptor and never falls back to that endpoint.
 
 **Prerequisites (one-time, in your Apple Developer account):**
 
@@ -214,15 +228,15 @@ when the provider button is ready; it neither hides nor clicks that button. The 
 required by [Coinbase's headless integration](https://docs.cdp.coinbase.com/onramp/headless-onramp/overview).
 Apps that previously kept the host offscreen must adopt a visible container before updating this SDK.
 
-This change introduces dispatch, not the entire new continuation protocol. Mercuryo currently retains
-its existing session-scoped processing transport; `paymentActions` adoption and the Stripe crypto
-onramp adapter remain separate work. An unsupported Stripe descriptor is never sent to the native-wallet
+Mercuryo native wallet orders use the generic action transport and durable attempt/verification
+lifecycle described above. The Stripe crypto onramp adapter remains separate work. An unsupported
+Stripe descriptor is never sent to the native-wallet
 adapter. React Native consumers need a release containing this change and a matching native dependency
 update; an OTA JavaScript update alone cannot change the native resolver.
 
 ### Public calls
 
-- `Meld.configure(environment:)` — `.sandbox` or `.production`.
+- `Meld.configure(environment:)` — `.sandbox`, `.qa` or `.production`; action origins must match it.
 - `Meld.capabilities(for:)` → `{ embeddable, surface, requiresUserGesture }` — decline `unsupported`;
   `embeddable` tells you whether to supply a visible host view. Native sheets are not embeddable.
 - `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
@@ -230,9 +244,29 @@ update; an OTA JavaScript update alone cannot change the native resolver.
   `MeldApplePayRequest` for an Apple Pay order; `handle.unmount()` tears it down (removes the widget
   or dismisses the sheet). See [Native Apple Pay](#native-apple-pay).
 - `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
-- `MeldApplePayRequest` — the amount/currency/country/wallet/IP the Apple Pay sheet and provider
-  need beyond what the order carries.
+- `MeldApplePayRequest` — amount/currency, display label and fallback email; wallet/IP fields
+  are required only for historical orders using the legacy endpoint.
 - `MeldOrder.from(jsonData:)` / `.from(jsonString:)` — decode your backend's order response.
+
+## Local tests
+
+Use the simulator app host for the full suite, including the real Keychain persistence tests.
+An unhosted SwiftPM test process has no app identity and cannot validate Keychain access. The host
+is generated outside the repository and uses a synthetic simulator-only signing identity:
+
+```sh
+gem install --user-install xcodeproj -v 1.27.0 --no-document # if not already installed with CocoaPods
+ruby scripts/generate-test-host.rb /tmp/meld-sdk-test-host
+xcodebuild test -project /tmp/meld-sdk-test-host/MeldSDKTests.xcodeproj \
+  -scheme MeldSDKHostedTests -destination 'platform=iOS Simulator,name=<installed iPhone>'
+```
+
+The wallet action tests use synthetic payloads and mocked HTTP. The existing Banxa WKWebView smoke
+tests load Primer's public CDN with an invalid test token; exclude that class with
+`-skip-testing:MeldSDKHostedTests/BanxaCardAdapterSmokeTests` for an entirely local test run.
+These tests do not authorize real wallets or establish provider/payment acceptance; device acceptance
+remains a separate release gate. CocoaPods packaging is checked with
+`POD_VERSION=0.0.1 pod lib lint MeldSDK.podspec --allow-warnings`.
 
 ## React Native
 
