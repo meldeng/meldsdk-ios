@@ -27,6 +27,15 @@ public struct MeldHeadlessPresentation: Equatable {
     }
 }
 
+public extension MeldHeadlessPresentation {
+    /// Decode a quote or payment method's `headlessPresentation` without creating an order.
+    /// Unknown well-formed protocols remain readable; malformed declarations return nil.
+    init?(json: [String: Any]) {
+        guard let decoded = Self.decode(json) else { return nil }
+        self = decoded
+    }
+}
+
 /// Absence permits legacy replay compatibility. A malformed declaration never does.
 enum HeadlessPresentationDeclaration {
     case absent
@@ -76,6 +85,11 @@ struct MeldAdapterRegistry {
         self.declared = declared
     }
 
+    func adapter(for presentation: MeldHeadlessPresentation, paymentMethodType: String) -> MeldAdapter? {
+        declared[MeldAdapterPresentation(paymentMethodType, presentation.surface, presentation.protocolName,
+                                        version: presentation.version)]
+    }
+
     func adapter(for order: MeldOrder) -> MeldAdapter? {
         switch order.presentationDeclaration {
         case .malformed:
@@ -85,9 +99,8 @@ struct MeldAdapterRegistry {
             return adapters.first { $0.matches(order) }
         case .declared(let presentation):
             guard let method = order.paymentMethodType else { return nil }
-            let key = MeldAdapterPresentation(method, presentation.surface, presentation.protocolName,
-                                              version: presentation.version)
-            guard let adapter = declared[key], adapter.acceptsDeclaredOrder(order) else { return nil }
+            guard let adapter = adapter(for: presentation, paymentMethodType: method),
+                  adapter.acceptsDeclaredOrder(order) else { return nil }
             return adapter
         }
     }
