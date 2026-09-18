@@ -15,6 +15,7 @@ protocol StripeFlowPresenting: AnyObject {
     func registration() async throws -> StripeRegistrationInput
     func identity(fields: [String]) async throws -> StripeIdentityInput
     func address() async throws -> StripeAddressInput
+    func disclosure(_ value: LegalDisclosure) async throws -> Bool
     func showProgress(_ message: String)
     func close()
 }
@@ -140,6 +141,7 @@ final class StripeFlowController {
             case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"):
                 return true
             case ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"):
+                try await requireIdentityConsent()
                 let input = try await forms.identity(fields: result.missingFields)
                 try await sdk { try await $0.attachIdentity(input) }
             case ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
@@ -159,6 +161,7 @@ final class StripeFlowController {
             let current = address
             let result = try await sdk { try await $0.confirmIdentity(address: current, from: self.forms.presenter) }
             if case .confirmed = result { return }
+            try await requireIdentityConsent()
             address = try await forms.address()
         }
         throw StripeNativeError.invalidResponse
@@ -212,6 +215,7 @@ final class StripeFlowController {
                 if result.next == "SDK_VERIFY_IDENTITY" {
                     try await sdk { try await $0.verifyIdentity(from: self.forms.presenter) }
                 } else {
+                    try await requireIdentityConsent()
                     let input = try await forms.identity(fields: [])
                     try await sdk { try await $0.attachIdentity(input) }
                 }
@@ -248,6 +252,19 @@ final class StripeFlowController {
     }
 
     private func action(_ operation: String, fields: [String: Any] = [:], key: UUID? = nil) async throws -> StripeActionResponse {
+        try StripeActionResponse(await send(operation, fields: fields, key: key))
+    }
+
+    private func requireIdentityConsent() async throws {
+        do {
+            try await LegalConsent.require("IDENTITY_DATA_SHARING", send: { operation, fields, key in
+                try await self.send(operation, fields: fields, key: key)
+            }, present: { try await self.forms.disclosure($0) }, check: { try self.check() })
+        } catch LegalConsentError.declined { throw StripeNativeError.cancelled }
+        catch LegalConsentError.cancelled { throw StripeNativeError.cancelled }
+    }
+
+    private func send(_ operation: String, fields: [String: Any], key: UUID?) async throws -> [String: Any] {
         // Retry only a transport failure, once, with the identical body and mutation identity.
         for attempt in 0..<2 {
             try check()
@@ -256,7 +273,7 @@ final class StripeFlowController {
                     client.send(operation, fields: fields, key: key) { continuation.resume(with: $0) }
                 }
                 try check()
-                return try StripeActionResponse(json)
+                return json
             } catch PaymentActionError.transport where attempt == 0 { continue }
         }
         throw PaymentActionError.transport

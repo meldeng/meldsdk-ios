@@ -55,9 +55,37 @@ final class StripeFlowControllerTests: XCTestCase {
             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
         let outcome = try await h.flow.run()
         XCTAssertEqual(outcome, .submitted)
-        XCTAssertEqual(h.forms.calls, ["email", "identity", "address"])
+        XCTAssertEqual(h.forms.calls, ["email", "disclosure", "identity", "address"])
         XCTAssertEqual(h.driver.calls.filter { ["attachIdentity", "verifyIdentity", "confirmIdentity"].contains($0) },
                        ["attachIdentity", "verifyIdentity", "confirmIdentity", "confirmIdentity"])
+        await h.flow.close()
+    }
+
+    func testFailedReceiptWriteNeverOpensIdentityOrPaymentAndRetriesTheSameKey() async throws {
+        let h = try FlowHarness()
+        h.client.legalWriteFailure = PaymentActionError.transport
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC")]
+        do { _ = try await h.flow.run(); XCTFail("Receipt must be durable before collection") }
+        catch PaymentActionError.transport {}
+        XCTAssertEqual(h.forms.calls, ["email", "disclosure"])
+        XCTAssertFalse(h.driver.calls.contains("attachIdentity"))
+        XCTAssertFalse(h.store.value.submissionStarted)
+        let writes = h.client.calls.filter { $0.operation == "RECORD_LEGAL_EVIDENCE" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes.first?.key, writes.last?.key)
+        await h.flow.close()
+    }
+
+    func testDeclinedDisclosureRecordsDecisionAndStopsBeforeIdentityCollection() async throws {
+        let h = try FlowHarness()
+        h.forms.acceptsDisclosure = false
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertEqual(h.client.legalReceipt?["result"] as? String, "DECLINED")
+        XCTAssertEqual(h.forms.calls, ["email", "disclosure"])
+        XCTAssertFalse(h.driver.calls.contains("attachIdentity"))
+        XCTAssertFalse(h.store.value.submissionStarted)
         await h.flow.close()
     }
 
@@ -314,7 +342,7 @@ private final class FlowHarness {
             "payload": ["serviceProvider": "TEST_PROVIDER", "sourceAmount": 20, "sourceCurrencyCode": "USD", "countryCode": "US", "destinationWalletAddress": "wallet-synthetic"],
             "paymentMethodResponseDetails": ["sdkBootstrapType": "STRIPE_CRYPTO_ONRAMP", "providerIntentId": "lai_synthetic", "sdkFlow": "AUTHORIZE", "sdkEnvironment": "SANDBOX", "expiresAtEpochSeconds": 1_900_000_000, "continuationToken": "synthetic-bearer", "clientConfiguration": ["publicKey": "pk_test_synthetic", "walletNetwork": "base", "merchantIdentifier": "merchant.example.stripe"]],
             "paymentActions": ["version": 1, "endpoint": "/crypto/order/headless/onramp/TEST_PROVIDER/synthetic-order/actions", "bearerTokenPointer": "/paymentMethodResponseDetails/continuationToken",
-                "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS", "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "PREPARE_CUSTOMER_AUTHORIZATION", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "REFRESH_QUOTE"].enumerated().map { ["operation": $0.element, "idempotencyKeyRequired": $0.offset >= 3] as [String: Any] }]]
+                "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS", "READ_LEGAL_DISCLOSURE", "RECORD_LEGAL_EVIDENCE", "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "PREPARE_CUSTOMER_AUTHORIZATION", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "REFRESH_QUOTE"].map { ["operation": $0, "idempotencyKeyRequired": !$0.hasPrefix("READ_")] as [String: Any] }]]
         return try StripeNativeOrder(MeldOrder.from(jsonData: JSONSerialization.data(withJSONObject: json)), environment: .sandbox)
     }
 }
@@ -326,8 +354,20 @@ private final class FlowClient: PaymentActionSending {
     var responses: [Result<[String: Any], Error>] = []
     var delay = false
     var delayed: ((Result<[String: Any], Error>) -> Void)?
+    var legalReceipt: [String: Any]?
+    var legalWriteFailure: Error?
     func send(_ operation: String, fields: [String: Any], key: UUID?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         calls.append(Call(operation: operation, fields: fields, key: key))
+        if operation == "READ_LEGAL_DISCLOSURE" {
+            completion(.success(LegalConsentFixtures.read(legalReceipt))); return
+        }
+        if operation == "RECORD_LEGAL_EVIDENCE" {
+            if let legalWriteFailure { completion(.failure(legalWriteFailure)); return }
+            guard let key, let evidence = fields["legalEvidence"] as? [String: Any], let result = evidence["result"] as? String
+            else { XCTFail("Missing receipt identity"); completion(.failure(PaymentActionError.invalidRequest)); return }
+            legalReceipt = LegalConsentFixtures.receipt(key, result: result)
+            completion(.success(LegalConsentFixtures.recorded(legalReceipt!))); return
+        }
         if delay { delayed = completion; return }
         guard !responses.isEmpty else { XCTFail("Unexpected action \(operation)"); completion(.failure(PaymentActionError.invalidResponse)); return }
         completion(responses.removeFirst())
@@ -348,6 +388,8 @@ private final class FlowStore: WalletAttemptStoring {
 private final class FlowForms: StripeFlowPresenting {
     let presenter = UIViewController()
     var calls: [String] = []
+    var acceptsDisclosure = true
+    func disclosure(_ value: LegalDisclosure) async throws -> Bool { calls.append("disclosure"); return acceptsDisclosure }
     func email() async throws -> String { calls.append("email"); return "customer@example.test" }
     func registration() async throws -> StripeRegistrationInput { calls.append("registration"); return StripeRegistrationInput(name: nil, phone: "+12025550123") }
     func identity(fields: [String]) async throws -> StripeIdentityInput { calls.append("identity"); return StripeIdentityInput() }

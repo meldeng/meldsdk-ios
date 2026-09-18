@@ -15,6 +15,16 @@ final class StripeNativeContractTests: XCTestCase {
         XCTAssertEqual(Meld.capabilities(for: try order()).surface, "native-sdk")
     }
 
+    func testBackendsWithoutLegalActionsCannotSelectTheNativeFlow() throws {
+        for missing in ["READ_LEGAL_DISCLOSURE", "RECORD_LEGAL_EVIDENCE"] {
+            try rejected { root in
+                var actions = root["paymentActions"] as! [String: Any]
+                actions["operations"] = (actions["operations"] as! [[String: Any]]).filter { $0["operation"] as? String != missing }
+                root["paymentActions"] = actions
+            }
+        }
+    }
+
     func testHistoricalAndIncompleteBootstrapsCannotSelectAWorkingNativeFlow() throws {
         for field in ["sdkBootstrapType", "providerIntentId", "sdkFlow", "sdkEnvironment", "expiresAtEpochSeconds", "clientConfiguration"] {
             try rejected { root in
@@ -145,10 +155,10 @@ final class StripeNativeContractTests: XCTestCase {
                                                                      "merchantIdentifier": "merchant.example.stripe"]],
             "paymentActions": ["version": 1, "endpoint": "/crypto/order/headless/onramp/TEST_PROVIDER/test-order/actions",
                                "bearerTokenPointer": "/paymentMethodResponseDetails/continuationToken",
-                               "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS",
+                               "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS", "READ_LEGAL_DISCLOSURE", "RECORD_LEGAL_EVIDENCE",
                                               "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "PREPARE_CUSTOMER_AUTHORIZATION", "CREATE_PAYMENT_SESSION",
-                                              "CONFIRM_PAYMENT", "REFRESH_QUOTE"].enumerated().map {
-                                                  ["operation": $0.element, "idempotencyKeyRequired": $0.offset >= 3] as [String: Any]
+                                              "CONFIRM_PAYMENT", "REFRESH_QUOTE"].map {
+                                                  ["operation": $0, "idempotencyKeyRequired": !$0.hasPrefix("READ_")] as [String: Any]
                                               }],
         ]
         change(&value)

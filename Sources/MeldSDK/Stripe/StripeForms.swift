@@ -53,6 +53,7 @@ final class StripeForms: StripeFlowPresenting {
     private let progress: (String) -> Void
     private var active = true
     private var form: StripeFormViewController?
+    private var legalForm: LegalDisclosureViewController?
     private var navigation: UINavigationController?
 
     init(presenter: UIViewController, progress: @escaping (String) -> Void) {
@@ -89,12 +90,39 @@ final class StripeForms: StripeFlowPresenting {
 
     func showProgress(_ message: String) { if active { progress(message) } }
 
+    func disclosure(_ value: LegalDisclosure) async throws -> Bool {
+        guard active, !Task.isCancelled, form == nil, legalForm == nil,
+              presenter.presentedViewController == nil, presenter.viewIfLoaded?.window != nil
+        else { throw StripeNativeError.unavailable }
+        return try await withCheckedThrowingContinuation { continuation in
+            let form = LegalDisclosureViewController(disclosure: value) { [weak self] result in
+                guard let self else { continuation.resume(throwing: LegalConsentError.cancelled); return }
+                let navigation = self.navigation
+                self.legalForm = nil; self.navigation = nil
+                guard self.active, let navigation else {
+                    navigation?.dismiss(animated: false)
+                    continuation.resume(throwing: LegalConsentError.cancelled)
+                    return
+                }
+                navigation.dismiss(animated: false) {
+                    continuation.resume(with: self.active ? result : .failure(LegalConsentError.cancelled))
+                }
+            }
+            legalForm = form
+            let navigation = UINavigationController(rootViewController: form)
+            self.navigation = navigation
+            navigation.modalPresentationStyle = .pageSheet; navigation.isModalInPresentation = true
+            presenter.present(navigation, animated: true)
+        }
+    }
+
     func close() {
         guard active else { return }
         active = false
         form?.cancel()
+        legalForm?.cancel()
         navigation?.dismiss(animated: false)
-        navigation = nil; form = nil
+        navigation = nil; form = nil; legalForm = nil
     }
 
     private static let addressFields: [StripeFormField] = [.line1, .line2, .city, .state, .postalCode]
@@ -105,7 +133,7 @@ final class StripeForms: StripeFlowPresenting {
     }
 
     private func collect(_ fields: [StripeFormField], title: String) async throws -> [StripeFormField: String] {
-        guard active, !Task.isCancelled, form == nil, presenter.presentedViewController == nil,
+        guard active, !Task.isCancelled, form == nil, legalForm == nil, presenter.presentedViewController == nil,
               presenter.viewIfLoaded?.window != nil else { throw StripeNativeError.unavailable }
         return try await withCheckedThrowingContinuation { continuation in
             let form = StripeFormViewController(fields: fields, title: title) { [weak self] result in

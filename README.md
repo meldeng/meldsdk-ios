@@ -11,7 +11,8 @@ entirely on the provider's PCI surface.
 
 **Implemented surfaces:** Mercuryo and Uphold card widgets, Banxa card and Apple Pay,
 Mercuryo native Apple Pay, and Coinbase-hosted Apple Pay. Use the returned capabilities to check
-whether this SDK build can present a particular order. Stripe crypto onramp is not yet implemented.
+whether this SDK build can present a particular order. Stripe native crypto onramp supports declared
+orders with the action and SDK contracts described below.
 
 > **Building in React Native?** You don't use this Swift API directly — use the
 > [@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native) wrapper
@@ -268,6 +269,20 @@ owns registration, KYC and address forms, identity verification, wallet registra
 Amounts, currency and wallet destination come from the order. Integrators do not route Stripe
 callbacks or exchange provider credentials. Registration email is a transient SDK input; the server
 still binds consent and completion to the order's customer. Use the email associated with that order.
+
+Before collecting identity details or an address correction, the SDK reads the configured disclosure
+through `READ_LEGAL_DISCLOSURE`, displays its exact text, and records the decision through
+`RECORD_LEGAL_EVIDENCE`. It requires a matching durable receipt before opening the form. Existing
+acceptance of the current document resumes without another prompt; declined, unavailable, malformed
+or failed receipts do not authorize collection. Receipt payloads contain document metadata only.
+Unmount fences late reads, presentations and receipt completions. Transport retries preserve the
+same body and receipt UUID.
+
+The order must declare both legal actions. Deploy payment's receipt migration, action handlers and
+approved disclosure configuration before releasing this SDK to clients. Missing actions reject the
+native contract; missing copy stops collection. Integrators keep the same `Meld.mount` entry point
+and do not implement a separate disclosure route or form. The receipt is retained by Meld. No legal
+copy is bundled, and an old SDK without this gate is not a rollback for a disclosure outage.
 
 The controller reads submission state before opening provider UI, preserves an existing session,
 and stores only the shared device attempt fence and mutation UUID. Transport retries reuse the same
