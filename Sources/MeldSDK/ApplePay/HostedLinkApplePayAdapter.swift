@@ -21,10 +21,8 @@ import os
 struct HostedLinkApplePayAdapter: MeldAdapter {
     let label = "Hosted Apple Pay link (APPLE_PAY / provider-hosted)"
 
-    // requiresUserGesture: with auto-present off, the only thing that opens the sheet is a tap on
-    // the provider's own button INSIDE their frame — Apple requires the gesture in the frame
-    // holding the merchant session. Either way the host must not render its own Apple Pay button
-    // in front of this one: it would be a second button that can never open a sheet.
+    // The user taps the provider's visible button inside the hosted page. A ready event is not
+    // a gesture; the SDK must neither hide nor programmatically click that button.
     let capabilities = MeldCapabilities(embeddable: true, surface: "embedded", requiresUserGesture: true)
 
     private static let logger = Logger(subsystem: "io.meld.sdk", category: "HostedLinkApplePayAdapter")
@@ -38,19 +36,26 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         ("coinbase.com", "cbOnramp")
     ]
 
+    let presentations = [MeldAdapterPresentation("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        return order.hasCompatibleLegacyPresentation("PROVIDER_HOSTED") && Self.hasSupportedLink(order)
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         guard order.paymentMethodType == "APPLE_PAY", order.presentation == .providerHosted else {
             return false
         }
         // A launchable link is the only provider-hosted protocol supported today.
-        return Self.paymentLink(in: order) != nil
+        return Self.hasSupportedLink(order)
     }
 
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard let host = context.host else {
             throw MeldMountError.missingHost(label)
         }
-        guard let linkString = Self.paymentLink(in: order), let link = URL(string: linkString) else {
+        guard Self.hasSupportedLink(order),
+              let linkString = Self.paymentLink(in: order), let link = URL(string: linkString) else {
             throw MeldMountError.missingWidgetURL
         }
         guard let providerProtocol = Self.protocols.first(where: { Self.hostMatches(link.host, $0.host) }) else {
@@ -68,50 +73,27 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
             throw MeldMountError.unsupported(unavailable)
         }
 
-        var webViewHost: WebViewHost?
-        let hostRef = { webViewHost }
-
         let created = WebViewHost(
             url: link,
             orderId: order.id,
             handlers: handlers,
-            nativeMessageHandlers: [providerProtocol.handler, Self.autoPresentChannel],
+            nativeMessageHandlers: [providerProtocol.handler],
             mainFrameHosts: [providerProtocol.host],
             // The provider tells us when its button is wired; page load does not. Reporting ready
             // at navigation would cancel a host's load-timeout before the surface is usable.
             firesReadyOnNavigation: false,
             interpret: { message in
-                Self.interpret(message, orderId: order.id, host: hostRef())
+                Self.interpret(message, orderId: order.id)
             })
-        webViewHost = created
         created.mount(into: host)
         return created
     }
 
     // MARK: - Provider protocol
 
-    /// Channel the injected auto-present script reports back on. The provider's own reference
-    /// implementation has no equivalent — its retry loop simply stops. That is fine while their
-    /// page is visible, because the user can still tap the button; with the page hidden it would
-    /// strand them on a blank screen, so exhaustion is reported and surfaced as an error the
-    /// integrator can fall back from.
-    static let autoPresentChannel = "meldAutoPresent"
-    static let autoPresentButtonNotFound = "button-not-found"
-
-    static func interpret(_ message: [String: Any], orderId: String?, host: WebViewHost?) -> [MeldEvent] {
-        guard let handler = message["handler"] as? String else { return [] }
-
-        if handler == autoPresentChannel {
-            guard message["body"] as? String == autoPresentButtonNotFound else { return [] }
-            return [.error(MeldError(
-                orderId: orderId,
-                code: "apple_pay_button_not_found",
-                message: "The provider's page did not present an Apple Pay button.",
-                detail: nil,
-                // Environmental, not a fault in the order — the integrator should offer another
-                // method rather than invite a retry that will hit the same page.
-                recoverable: true))]
-        }
+    static func interpret(_ message: [String: Any], orderId: String?) -> [MeldEvent] {
+        guard let handler = message["handler"] as? String,
+              Self.protocols.contains(where: { $0.handler == handler }) else { return [] }
 
         // The provider posts JSON strings shaped { eventName, data }.
         guard let body = message["body"] as? String,
@@ -122,9 +104,8 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
 
         switch eventName {
         case "onramp_api.load_success":
-            // The page is up and its button is wired. Hide it and click it so the sheet is the only
-            // thing the user ever sees.
-            host?.evaluateJavaScript(autoPresentScript)
+            // Keep the provider button visible. Coinbase requires a real tap in its hosted page;
+            // load readiness does not authorize opening a wallet sheet programmatically.
             return [.ready]
 
         case "onramp_api.commit_success", "onramp_api.polling_start":
@@ -166,28 +147,11 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         }
     }
 
-    /// Hides the provider's Apple Pay button and clicks it once their page has wired it up, which
-    /// is what presents the native sheet. Mirrors the provider's own reference app
-    /// (coinbase/onramp-v2-mobile-demo, `injectPayButtonClick`).
-    ///
-    /// This is the one piece of the SDK coupled to a provider's DOM, and it will break if they
-    /// rename that element — which is why exhaustion is reported rather than silently swallowed.
-    private static let autoPresentScript = """
-        var style = document.createElement('style');
-        style.textContent = 'apple-pay-button { display: none !important; }';
-        document.head.appendChild(style);
-        function tryClick(attempt) {
-          var btn = document.getElementById('api-onramp-apple-pay-button');
-          if (btn) { btn.click(); }
-          else if (attempt < 10) { setTimeout(function () { tryClick(attempt + 1); }, 500); }
-          else {
-            window.webkit.messageHandlers.\(autoPresentChannel).postMessage('\(autoPresentButtonNotFound)');
-          }
-        }
-        tryClick(1);
-        """
-
     // MARK: - Order reading
+
+    private static func hasSupportedLink(_ order: MeldOrder) -> Bool {
+        MeldPresentationURL.https(paymentLink(in: order), hosts: Set(protocols.map(\.host)), subdomains: true)
+    }
 
     /// The launchable payment link, if this order carries one.
     private static func paymentLink(in order: MeldOrder) -> String? {

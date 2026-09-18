@@ -44,6 +44,14 @@ struct BanxaApplePayAdapter: MeldAdapter {
     /// against a contract change rather than a bug today. It is worth one clause: the failure it
     /// prevents is a token crossing providers, and the cost of being wrong in the other direction is
     /// a Banxa order failing in Banxa's own adapter, with Banxa's own message.
+    let presentations = [MeldAdapterPresentation("APPLE_PAY", "VENDOR_SDK", "BANXA_CHECKOUT")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        let details = order.paymentMethodResponseDetails
+        return order.hasCompatibleLegacyPresentation("VENDOR_SDK")
+            && ((details?["sessionToken"] as? String) ?? (details?["sdkSessionToken"] as? String))?.isEmpty == false
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.serviceProvider == "BANXA"
             && order.paymentMethodType == "APPLE_PAY"

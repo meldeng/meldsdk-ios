@@ -56,7 +56,7 @@ final class HostedLinkApplePayTests: XCTestCase {
     private func events(_ eventName: String, data: String = "{}") -> [MeldEvent] {
         HostedLinkApplePayAdapter.interpret(
             ["handler": "cbOnramp", "body": #"{"eventName":"\#(eventName)","data":\#(data)}"#],
-            orderId: "o1", host: nil)
+            orderId: "o1")
     }
 
     func testLoadSuccessIsReady() {
@@ -126,7 +126,7 @@ final class HostedLinkApplePayTests: XCTestCase {
 
     func testMalformedPayloadIsDropped() {
         let mapped = HostedLinkApplePayAdapter.interpret(
-            ["handler": "cbOnramp", "body": "not json"], orderId: "o1", host: nil)
+            ["handler": "cbOnramp", "body": "not json"], orderId: "o1")
         XCTAssertTrue(mapped.isEmpty)
     }
 
@@ -150,13 +150,9 @@ final class HostedLinkApplePayTests: XCTestCase {
         }
     }
 
-    func testButtonNotFoundIsARecoverableError() {
+    func testMessagesFromUnknownNativeHandlersAreIgnored() {
         let mapped = HostedLinkApplePayAdapter.interpret(
-            ["handler": HostedLinkApplePayAdapter.autoPresentChannel,
-             "body": HostedLinkApplePayAdapter.autoPresentButtonNotFound],
-            orderId: "o1", host: nil)
-        guard case let .error(error) = mapped.first else { return XCTFail("expected .error") }
-        XCTAssertEqual(error.code, "apple_pay_button_not_found")
-        XCTAssertTrue(error.recoverable, "offer another method rather than retry the same page")
+            ["handler": "meldAutoPresent", "body": "button-not-found"], orderId: "o1")
+        XCTAssertTrue(mapped.isEmpty)
     }
 }
