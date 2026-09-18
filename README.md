@@ -9,8 +9,9 @@ The SDK is a **container manager and event relay** — it never renders card inp
 or transports PAN/CVC, and never reaches into the provider's content. Card capture happens
 entirely on the provider's PCI surface.
 
-**Supported today:** Mercuryo credit/debit card (embedded widget) and Mercuryo **native Apple Pay**
-(PassKit sheet — see [Native Apple Pay](#native-apple-pay)).
+**Implemented surfaces:** Mercuryo and Uphold card widgets, Banxa card and Apple Pay,
+Mercuryo native Apple Pay, and Coinbase-hosted Apple Pay. Use the returned capabilities to check
+whether this SDK build can present a particular order. Stripe crypto onramp is not yet implemented.
 
 > **Building in React Native?** You don't use this Swift API directly — use the
 > [@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native) wrapper
@@ -177,9 +178,53 @@ terminal outcome. See [`Example/README.md`](Example/README.md) for credentials a
 
 ## API reference
 
+### Versioned presentation dispatch
+
+Pass the complete order response to `MeldOrder.from`. New responses include a top-level descriptor:
+
+```json
+"headlessPresentation": {
+  "surface": "PROVIDER_HOSTED",
+  "protocol": "COINBASE_APPLE_PAY",
+  "version": 1
+}
+```
+
+The SDK chooses an adapter using the descriptor and payment method. Integrators do not choose a
+renderer by provider name. `MeldOrder.headlessPresentation` exposes valid metadata, including values
+this binary does not implement; capability inspection and mounting use the same registry.
+
+| Protocol v1 | Method | Surface |
+| --- | --- | --- |
+| `MERCURYO_WIDGET` | `CREDIT_DEBIT_CARD` | `EMBEDDED_WIDGET` |
+| `UPHOLD_WIDGET` | `CREDIT_DEBIT_CARD` | `EMBEDDED_WIDGET` |
+| `BANXA_CHECKOUT` | `CREDIT_DEBIT_CARD` | `EMBEDDED_WIDGET` |
+| `BANXA_CHECKOUT` | `APPLE_PAY` | `VENDOR_SDK` |
+| `MELD_WALLET_TOKEN` | `APPLE_PAY` | `SYSTEM_WALLET_TOKEN` |
+| `COINBASE_APPLE_PAY` | `APPLE_PAY` | `PROVIDER_HOSTED` |
+
+Unknown versions, mismatched surfaces/methods, invalid descriptors and unsupported payloads return
+`surface == "unsupported"`; mounting throws before starting a payment surface. A present but invalid
+descriptor never selects a legacy adapter. Orders without the descriptor keep the existing compatibility
+path, including stored responses from older servers. Do not create a new order or replace its idempotency
+key to obtain new metadata.
+
+For a provider-hosted surface, the SDK hides the provider's Apple Pay button and clicks it once the
+page reports it is wired, so the native sheet is the only thing the user sees and the host view may
+stay offscreen. This mirrors Coinbase's reference mobile app. If the button never appears, the SDK
+reports a recoverable `apple_pay_button_not_found` error; offer another payment method.
+
+This change introduces dispatch, not the entire new continuation protocol. Mercuryo currently retains
+its existing session-scoped processing transport; `paymentActions` adoption and the Stripe crypto
+onramp adapter remain separate work. An unsupported Stripe descriptor is never sent to the native-wallet
+adapter. React Native consumers need a release containing this change and a matching native dependency
+update; an OTA JavaScript update alone cannot change the native resolver.
+
+### Public calls
+
 - `Meld.configure(environment:)` — `.sandbox` or `.production`.
-- `Meld.capabilities(for:)` → `{ embeddable, surface, requiresUserGesture }` — guard with
-  `embeddable` before `mount`.
+- `Meld.capabilities(for:)` → `{ embeddable, surface, requiresUserGesture }` — decline `unsupported`;
+  `embeddable` tells you whether to supply a visible host view. Native sheets are not embeddable.
 - `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
   surface and relays its events. Pass `into:` a `UIView` for an embedded widget, or `applePay:` a
   `MeldApplePayRequest` for an Apple Pay order; `handle.unmount()` tears it down (removes the widget

@@ -34,6 +34,13 @@ struct BanxaCardAdapter: MeldAdapter {
     ///
     /// Registry order matters: `MercuryoCardAdapter` matches any CREDIT_DEBIT_CARD + IFRAME order, so
     /// Banxa must be registered ahead of it.
+    let presentations = [MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "BANXA_CHECKOUT")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        order.paymentMethodResponseDetails?.renderMode == "IFRAME"
+            && (order.paymentMethodResponseDetails?["sdkSessionToken"] as? String)?.isEmpty == false
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.serviceProvider == Self.serviceProvider
             && order.paymentMethodType == "CREDIT_DEBIT_CARD"

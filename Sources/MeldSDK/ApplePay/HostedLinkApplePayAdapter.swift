@@ -38,19 +38,26 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         ("coinbase.com", "cbOnramp")
     ]
 
+    let presentations = [MeldAdapterPresentation("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        return order.hasCompatibleLegacyPresentation("PROVIDER_HOSTED") && Self.hasSupportedLink(order)
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         guard order.paymentMethodType == "APPLE_PAY", order.presentation == .providerHosted else {
             return false
         }
         // A launchable link is the only provider-hosted protocol supported today.
-        return Self.paymentLink(in: order) != nil
+        return Self.hasSupportedLink(order)
     }
 
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard let host = context.host else {
             throw MeldMountError.missingHost(label)
         }
-        guard let linkString = Self.paymentLink(in: order), let link = URL(string: linkString) else {
+        guard Self.hasSupportedLink(order),
+              let linkString = Self.paymentLink(in: order), let link = URL(string: linkString) else {
             throw MeldMountError.missingWidgetURL
         }
         guard let providerProtocol = Self.protocols.first(where: { Self.hostMatches(link.host, $0.host) }) else {
@@ -112,6 +119,7 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
                 // method rather than invite a retry that will hit the same page.
                 recoverable: true))]
         }
+        guard Self.protocols.contains(where: { $0.handler == handler }) else { return [] }
 
         // The provider posts JSON strings shaped { eventName, data }.
         guard let body = message["body"] as? String,
@@ -188,6 +196,10 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         """
 
     // MARK: - Order reading
+
+    private static func hasSupportedLink(_ order: MeldOrder) -> Bool {
+        MeldPresentationURL.https(paymentLink(in: order), hosts: Set(protocols.map(\.host)), subdomains: true)
+    }
 
     /// The launchable payment link, if this order carries one.
     private static func paymentLink(in order: MeldOrder) -> String? {
