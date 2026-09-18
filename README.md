@@ -250,6 +250,26 @@ update; an OTA JavaScript update alone cannot change the native resolver.
 
 ## Local tests
 
+### Stripe native bridge
+
+The internal Stripe bridge uses the real `StripeCryptoOnramp` 26.11.0 API and a serialized coordinator
+lifecycle. It validates the order's SDK configuration, route, action declarations and recovery responses;
+rejects late or foreign-session checkout callbacks; and keeps SDK ownership until pending calls and
+logout finish. Identity input and SDK credentials are not persisted or returned in diagnostics.
+
+This is a prerequisite for the native adapter. Stripe remains `unsupported` in public capability
+inspection until the visible forms, authentication restoration and payment flow controller are wired
+and verified. The current tests do not establish device/provider payment acceptance.
+
+Both package managers pin Stripe to **26.11.0**. SwiftPM uses Stripe's official
+[`stripe-ios-spm`](https://github.com/stripe/stripe-ios-spm) repository. The 25.11 package does not expose
+the onramp product, even though its CocoaPod does. Par's old direct `@stripe/stripe-react-native:0.64.0`
+dependency requires Stripe 25.11 and cannot coexist with this pod pin; remove that old onramp integration
+during migration before adopting this SDK release. Document verification also requires the host app's
+`NSCameraUsageDescription`; the bridge rejects that operation if the usage description is absent.
+
+### Simulator suite
+
 Use the simulator app host for the full suite, including the real Keychain persistence tests.
 An unhosted SwiftPM test process has no app identity and cannot validate Keychain access. The host
 is generated outside the repository and uses a synthetic simulator-only signing identity:
