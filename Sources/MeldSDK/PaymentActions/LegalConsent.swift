@@ -41,10 +41,18 @@ struct LegalDisclosure: CustomStringConvertible {
 enum LegalConsent {
     typealias Send = @MainActor (String, [String: Any], UUID?) async throws -> [String: Any]
 
-    static func require(_ code: String, send: Send,
+    static func require(_ code: String, store: LegalDecisionStoring, send: Send,
+                        recover: @MainActor (LegalDecision) async throws -> Bool = { _ in throw LegalConsentError.unavailable },
                         present: @MainActor (LegalDisclosure) async throws -> Bool,
                         check: @MainActor () throws -> Void) async throws {
         try check()
+        if let pending = try store.pending() {
+            guard pending.code == code else { throw PaymentActionError.storage }
+            guard try await recover(pending) else { throw LegalConsentError.cancelled }
+            try check()
+            try await record(pending, store: store, send: send, check: check)
+            // A recovered acceptance may belong to an older document. Read current disclosure again.
+        }
         let read = try await send("READ_LEGAL_DISCLOSURE", ["legalRequirementCode": code], nil)
         try check()
         guard PaymentActionJSON.integer(read["version"]) == 1 else { throw LegalConsentError.invalidResponse }
@@ -59,20 +67,28 @@ enum LegalConsent {
         }
         let accepted = try await present(disclosure)
         try check()
-        let key = UUID()
-        let expected = accepted ? "ACCEPTED" : "DECLINED"
-        let recorded = try await send("RECORD_LEGAL_EVIDENCE", [
-            "legalRequirementCode": code,
-            "legalEvidence": ["documentVersion": disclosure.version, "locale": disclosure.locale,
-                              "documentDigest": disclosure.digest, "result": expected]], key)
+        let decision = LegalDecision(disclosure: disclosure, accepted: accepted)
+        try store.retain(decision)
         try check()
+        try await record(decision, store: store, send: send, check: check)
+    }
+
+    private static func record(_ decision: LegalDecision, store: LegalDecisionStoring,
+                               send: Send, check: @MainActor () throws -> Void) async throws {
+        let recorded = try await send("RECORD_LEGAL_EVIDENCE", decision.fields, decision.key)
+        try check()
+        let expected = decision.accepted ? "ACCEPTED" : "DECLINED"
+        let disclosure = try LegalDisclosure(["requirementCode": decision.code, "title": "Saved decision",
+            "documentVersion": decision.documentVersion, "locale": decision.locale,
+            "documentDigest": decision.digest, "text": "Previously reviewed disclosure."], code: decision.code)
         guard PaymentActionJSON.integer(recorded["version"]) == 1,
-              recorded["status"] as? String == (accepted ? "AUTHORIZED" : "REJECTED"),
+              recorded["status"] as? String == (decision.accepted ? "AUTHORIZED" : "REJECTED"),
               recorded["nextStep"] as? String == "NONE",
               let legal = recorded["legal"] as? [String: Any], let receipt = legal["receipt"],
-              try validate(receipt, disclosure: disclosure, key: key) == expected
+              try validate(receipt, disclosure: disclosure, key: decision.key) == expected
         else { throw LegalConsentError.invalidResponse }
-        if !accepted { throw LegalConsentError.declined }
+        try store.resolve(decision)
+        if !decision.accepted { throw LegalConsentError.declined }
     }
 
     private static func validate(_ value: Any, disclosure: LegalDisclosure, key: UUID?) throws -> String {

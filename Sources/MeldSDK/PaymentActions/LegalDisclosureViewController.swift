@@ -2,11 +2,12 @@ import UIKit
 
 @MainActor
 final class LegalDisclosureViewController: UIViewController {
+    private let recovery: Bool
     private let disclosure: LegalDisclosure
     private var completion: ((Result<Bool, Error>) -> Void)?
 
-    init(disclosure: LegalDisclosure, completion: @escaping (Result<Bool, Error>) -> Void) {
-        self.disclosure = disclosure; self.completion = completion
+    init(disclosure: LegalDisclosure, recovery: Bool = false, completion: @escaping (Result<Bool, Error>) -> Void) {
+        self.recovery = recovery; self.disclosure = disclosure; self.completion = completion
         super.init(nibName: nil, bundle: nil)
         title = disclosure.title
     }
@@ -21,12 +22,12 @@ final class LegalDisclosureViewController: UIViewController {
         copy.font = .preferredFont(forTextStyle: .body); copy.adjustsFontForContentSizeCategory = true
         copy.backgroundColor = .systemBackground; copy.accessibilityLanguage = disclosure.locale
         let accept = UIButton(type: .system)
-        accept.configuration = .filled(); accept.setTitle("Agree and continue", for: .normal)
+        accept.configuration = .filled(); accept.setTitle(recovery ? "Retry saved decision" : "Agree and continue", for: .normal)
         accept.addTarget(self, action: #selector(acceptTapped), for: .touchUpInside)
         let decline = UIButton(type: .system)
         decline.setTitle("Decline", for: .normal)
         decline.addTarget(self, action: #selector(declineTapped), for: .touchUpInside)
-        let buttons = UIStackView(arrangedSubviews: [accept, decline]); buttons.axis = .vertical; buttons.spacing = 8
+        let buttons = UIStackView(arrangedSubviews: recovery ? [accept] : [accept, decline]); buttons.axis = .vertical; buttons.spacing = 8
         copy.translatesAutoresizingMaskIntoConstraints = false; buttons.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(copy); view.addSubview(buttons)
         let guide = view.safeAreaLayoutGuide

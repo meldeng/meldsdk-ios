@@ -15,6 +15,7 @@ protocol StripeFlowPresenting: AnyObject {
     func registration() async throws -> StripeRegistrationInput
     func identity(fields: [String]) async throws -> StripeIdentityInput
     func address() async throws -> StripeAddressInput
+    func recoverLegalDecision(_ value: LegalDecision) async throws -> Bool
     func disclosure(_ value: LegalDisclosure) async throws -> Bool
     func showProgress(_ message: String)
     func close()
@@ -34,6 +35,7 @@ final class StripeFlowController {
     enum Outcome { case completed, submitted, pending, verificationPending, cancelled }
     private let order: StripeNativeOrder
     private let client: PaymentActionSending
+    private let legalStore: LegalDecisionStoring
     private let store: WalletAttemptStoring
     private let forms: StripeFlowPresenting
     private let lifetime: StripeFlowLifetime
@@ -51,8 +53,10 @@ final class StripeFlowController {
     init(order: StripeNativeOrder, client: PaymentActionSending, store: WalletAttemptStoring,
          forms: StripeFlowPresenting, lifetime: StripeFlowLifetime, request: PKPaymentRequest?,
          factory: @escaping @MainActor () async throws -> StripeSdkRuntime,
+         legalStore: LegalDecisionStoring? = nil,
          now: @escaping () -> Date = Date.init,
          pause: @escaping @MainActor () async throws -> Void = { try await Task.sleep(nanoseconds: 2_000_000_000) }) {
+        self.legalStore = legalStore ?? LegalDecisionStore(identity: order.actions.identity, code: "IDENTITY_DATA_SHARING")
         self.order = order; self.client = client; self.store = store; self.forms = forms
         self.lifetime = lifetime; self.request = request; self.factory = factory; self.now = now; self.pause = pause
     }
@@ -253,9 +257,10 @@ final class StripeFlowController {
 
     private func requireIdentityConsent() async throws {
         do {
-            try await LegalConsent.require("IDENTITY_DATA_SHARING", send: { operation, fields, key in
+            try await LegalConsent.require("IDENTITY_DATA_SHARING", store: legalStore, send: { operation, fields, key in
                 try await self.send(operation, fields: fields, key: key)
-            }, present: { try await self.forms.disclosure($0) }, check: { try self.check() })
+            }, recover: { try await self.forms.recoverLegalDecision($0) },
+               present: { try await self.forms.disclosure($0) }, check: { try self.check() })
         } catch LegalConsentError.declined { throw StripeNativeError.cancelled }
         catch LegalConsentError.cancelled { throw StripeNativeError.cancelled }
     }
@@ -277,5 +282,12 @@ final class StripeFlowController {
 
     private func check() throws {
         guard lifetime.active, !Task.isCancelled else { throw StripeNativeError.cancelled }
+    }
+}
+
+// Presenters without a recovery surface must refuse the saved mutation, never synthesize approval.
+extension StripeFlowPresenting {
+    func recoverLegalDecision(_ value: LegalDecision) async throws -> Bool {
+        throw LegalConsentError.unavailable
     }
 }

@@ -369,7 +369,7 @@ private final class FlowHarness {
                                    factory: {
             counter.value += 1
             return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver }
-        }, pause: {})
+        }, legalStore: MemoryLegalDecisionStore(), pause: {})
     }
     static let bootstrap: [Result<[String: Any], Error>] = [
         .success(["version": 1, "status": "NOT_STARTED", "nextStep": "NONE", "sdk": ["authenticationState": "BOOTSTRAP"]]),

@@ -46,7 +46,7 @@ final class LegalConsentTests: XCTestCase {
 
     func testAcceptanceRequiresMatchingDurableReceiptAndSendsOnlyMetadata() async throws {
         var calls: [String] = []
-        try await LegalConsent.require(LegalConsentFixtures.code, send: { operation, fields, key in
+        try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { operation, fields, key in
             calls.append(operation)
             XCTAssertEqual(fields["legalRequirementCode"] as? String, LegalConsentFixtures.code)
             if operation == "READ_LEGAL_DISCLOSURE" { XCTAssertNil(key); return LegalConsentFixtures.read() }
@@ -65,7 +65,7 @@ final class LegalConsentTests: XCTestCase {
 
     func testCurrentAcceptedReceiptResumesWithoutPresentingOrWritingAgain() async throws {
         var calls = 0
-        try await LegalConsent.require(LegalConsentFixtures.code, send: { _, _, _ in
+        try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { _, _, _ in
             calls += 1; return LegalConsentFixtures.read(LegalConsentFixtures.receipt())
         }, present: { _ in XCTFail("Receipt already accepted"); return true }, check: {})
         XCTAssertEqual(calls, 1)
@@ -73,7 +73,7 @@ final class LegalConsentTests: XCTestCase {
 
     func testDeclineIsRecordedAndCannotAuthorizeCollection() async throws {
         do {
-            try await LegalConsent.require(LegalConsentFixtures.code, send: { operation, _, key in
+            try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { operation, _, key in
                 if operation == "READ_LEGAL_DISCLOSURE" { return LegalConsentFixtures.read() }
                 return LegalConsentFixtures.recorded(LegalConsentFixtures.receipt(key!, result: "DECLINED"))
             }, present: { _ in false }, check: {})
@@ -84,7 +84,7 @@ final class LegalConsentTests: XCTestCase {
     func testFailedOrMismatchedWritesNeverAuthorizeCollection() async throws {
         for invalid in 0..<5 {
             do {
-                try await LegalConsent.require(LegalConsentFixtures.code, send: { operation, _, key in
+                try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { operation, _, key in
                     if operation == "READ_LEGAL_DISCLOSURE" { return LegalConsentFixtures.read() }
                     if invalid == 0 { throw PaymentActionError.transport }
                     var receipt = LegalConsentFixtures.receipt(key!)
@@ -103,7 +103,7 @@ final class LegalConsentTests: XCTestCase {
         for response: [String: Any] in [[:], ["version": 1, "status": "NOT_AVAILABLE"],
                                        ["version": 1, "status": "READY", "nextStep": "COLLECT_LEGAL_EVIDENCE", "legal": [:]]] {
             do {
-                try await LegalConsent.require(LegalConsentFixtures.code, send: { _, _, _ in response },
+                try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { _, _, _ in response },
                     present: { _ in XCTFail("No approved copy"); return true }, check: {})
                 XCTFail("Missing copy must stop collection")
             } catch {}
@@ -113,7 +113,7 @@ final class LegalConsentTests: XCTestCase {
     func testReceiptCompletionAfterUnmountCannotAuthorizeCollection() async throws {
         var active = true
         do {
-            try await LegalConsent.require(LegalConsentFixtures.code, send: { operation, _, key in
+            try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { operation, _, key in
                 if operation == "READ_LEGAL_DISCLOSURE" { return LegalConsentFixtures.read() }
                 active = false
                 return LegalConsentFixtures.recorded(LegalConsentFixtures.receipt(key!))
@@ -129,7 +129,7 @@ final class LegalConsentTests: XCTestCase {
             var active = true
             var calls = 0
             do {
-                try await LegalConsent.require(LegalConsentFixtures.code, send: { _, _, _ in
+                try await LegalConsent.require(LegalConsentFixtures.code, store: MemoryLegalDecisionStore(), send: { _, _, _ in
                     calls += 1
                     if stopAfterRead { active = false }
                     return LegalConsentFixtures.read()
@@ -140,5 +140,18 @@ final class LegalConsentTests: XCTestCase {
             } catch LegalConsentError.cancelled {}
             XCTAssertEqual(calls, 1)
         }
+    }
+}
+
+final class MemoryLegalDecisionStore: LegalDecisionStoring {
+    var value: LegalDecision?
+    func pending() throws -> LegalDecision? { value }
+    func retain(_ decision: LegalDecision) throws {
+        guard value == nil || value == decision else { throw PaymentActionError.alreadyAttempted }
+        value = decision
+    }
+    func resolve(_ decision: LegalDecision) throws {
+        guard value == decision else { throw PaymentActionError.storage }
+        value = nil
     }
 }

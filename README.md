@@ -312,8 +312,19 @@ through `READ_LEGAL_DISCLOSURE`, displays its exact text, and records the decisi
 `RECORD_LEGAL_EVIDENCE`. It requires a matching durable receipt before opening the form. Existing
 acceptance of the current document resumes without another prompt; declined, unavailable, malformed
 or failed receipts do not authorize collection. Receipt payloads contain document metadata only.
-Unmount fences late reads, presentations and receipt completions. Transport retries preserve the
-same body and receipt UUID.
+Unmount fences late reads, presentations and receipt completions. Before dispatch, the SDK retains
+an immutable legal decision and receipt UUID in device-only Keychain storage scoped to the order
+and requirement. Storage failure prevents dispatch. An uncertain result survives remounts and
+shows an explicit **Retry saved decision** action; it cannot be replaced by a different choice.
+Retry sends the same metadata/result/key. Only a matching validated receipt resolves the saved
+decision. A recovered acceptance then rereads current disclosure, so an older document cannot
+authorize collection under a newer one. A recovered decline stops collection.
+
+The journal contains document identifiers, digest, result and UUID only—not disclosure copy,
+bearers, URLs or customer details. Cancellation retains it. Corrupt or unavailable storage stops
+collection. There is no automatic retry, and integrators must still establish valid order-scoped
+authorization before explicitly reopening an existing order. App-level re-entry and authorization
+recovery are separate from this SDK journal.
 
 The order must declare both legal actions. Deploy payment's receipt migration, action handlers and
 approved disclosure configuration before releasing this SDK to clients. Missing actions reject the
@@ -322,7 +333,7 @@ and do not implement a separate disclosure route or form. The receipt is retaine
 copy is bundled, and an old SDK without this gate is not a rollback for a disclosure outage.
 
 The controller reads submission state before opening provider UI, preserves an existing session,
-and stores only the shared device attempt fence and mutation UUID. Transport retries reuse the same
+and stores the shared device attempt fence/mutation UUID plus unresolved legal decision metadata. Transport retries reuse the same
 body and key; each actual checkout callback receives its own pair. A KYC result during checkout
 resumes verification and re-quotes the same session. Pending verification and unresolved payment
 emit `pending`; native SDK completion alone does not emit a completed order. Track that existing

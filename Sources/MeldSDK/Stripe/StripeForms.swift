@@ -90,12 +90,25 @@ final class StripeForms: StripeFlowPresenting {
 
     func showProgress(_ message: String) { if active { progress(message) } }
 
+    func recoverLegalDecision(_ value: LegalDecision) async throws -> Bool {
+        let decision = value.accepted ? "acceptance" : "decline"
+        let disclosure = try LegalDisclosure(["requirementCode": value.code,
+            "title": "Confirm your saved decision", "documentVersion": value.documentVersion,
+            "locale": value.locale, "documentDigest": value.digest,
+            "text": "The result of your previous \(decision) could not be confirmed. Retry sends that same decision again; it does not make a new choice or start a payment. You can also cancel and keep it saved."], code: value.code)
+        return try await showDisclosure(disclosure, recovery: true)
+    }
+
     func disclosure(_ value: LegalDisclosure) async throws -> Bool {
+        try await showDisclosure(value, recovery: false)
+    }
+
+    private func showDisclosure(_ value: LegalDisclosure, recovery: Bool) async throws -> Bool {
         guard active, !Task.isCancelled, form == nil, legalForm == nil,
               presenter.presentedViewController == nil, presenter.viewIfLoaded?.window != nil
         else { throw StripeNativeError.unavailable }
         return try await withCheckedThrowingContinuation { continuation in
-            let form = LegalDisclosureViewController(disclosure: value) { [weak self] result in
+            let form = LegalDisclosureViewController(disclosure: value, recovery: recovery) { [weak self] result in
                 guard let self else { continuation.resume(throwing: LegalConsentError.cancelled); return }
                 let navigation = self.navigation
                 self.legalForm = nil; self.navigation = nil
