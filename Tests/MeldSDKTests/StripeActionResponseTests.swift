@@ -4,7 +4,7 @@ import XCTest
 final class StripeActionResponseTests: XCTestCase {
     func testReadProjectionNeverConfusesProgressOrUnknownWithAReusableAttempt() throws {
         let rows: [(String, String, StripeActionResponse.Submission)] = [
-            ("NOT_STARTED", "NONE", .notStarted), ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .inProgress),
+            ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .inProgress),
             ("SUBMITTED", "WAIT_FOR_PAYMENT", .submitted), ("SUCCEEDED", "COMPLETE", .completed),
             ("FAILED", "NONE", .failed), ("REJECTED", "NONE", .failed), ("EXPIRED", "NONE", .expired),
             ("UNKNOWN", "WAIT_FOR_PROVIDER", .unknown),
@@ -18,9 +18,35 @@ final class StripeActionResponseTests: XCTestCase {
         XCTAssertThrowsError(try decode("NOT_STARTED", "CONFIRM_PAYMENT").submission())
         XCTAssertThrowsError(try decode("READY", "REFRESH_QUOTE").submission())
         XCTAssertThrowsError(try decode("FULFILLMENT_COMPLETE", "NONE").submission())
-        let resume = try decode("READY", "REFRESH_QUOTE", sdk: ["sessionHandle": "cos_synthetic"])
-        XCTAssertEqual(try resume.submission(), .resumeSession("cos_synthetic"))
+        let resume = try decode("READY", "REFRESH_QUOTE", sdk: ["sessionHandle": "cos_synthetic", "authenticationState": "RESTORE"])
+        XCTAssertEqual(try resume.submission(), .resumeSession("cos_synthetic", .restore))
         XCTAssertThrowsError(try decode("NOT_STARTED", "NONE", sdk: ["sessionHandle": "cos_synthetic"]).submission())
+    }
+
+    func testAuthenticationRecoveryStateIsRequiredBeforeResumingAnOrder() throws {
+        for state in [StripeActionResponse.Authentication.bootstrap, .restore, .reauthorize] {
+            XCTAssertEqual(try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": state.rawValue]).submission(), .notStarted(state))
+        }
+        XCTAssertEqual(try decode("READY", "REFRESH_QUOTE", sdk: ["sessionHandle": "cos_existing", "authenticationState": "REAUTHORIZE"]).submission(),
+                       .resumeSession("cos_existing", .reauthorize))
+        XCTAssertThrowsError(try decode("NOT_STARTED", "NONE").submission())
+        XCTAssertThrowsError(try decode("READY", "REFRESH_QUOTE", sdk: ["sessionHandle": "cos_existing"]).submission())
+        XCTAssertThrowsError(try decode("READY", "REFRESH_QUOTE", sdk: ["sessionHandle": "cos_existing", "authenticationState": "BOOTSTRAP"]).submission())
+        XCTAssertThrowsError(try decode("SUCCEEDED", "COMPLETE", sdk: ["authenticationState": "RESTORE"]).submission())
+    }
+
+    func testInteractiveAuthorizationRequiresAnUnexpiredIntentAndCannotBeConfusedWithASecret() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let expiry = ISO8601DateFormatter().string(from: now.addingTimeInterval(60))
+        let sdk = ["authorizationHandle": "lai_synthetic", "expiresAt": expiry, "authenticationState": "REAUTHORIZE"]
+        let response = try decode("READY", "SDK_AUTHORIZE", sdk: sdk)
+        XCTAssertEqual(try response.authorizationIntent(now: now), "lai_synthetic")
+        XCTAssertThrowsError(try response.authorizationIntent(now: now.addingTimeInterval(60)))
+        XCTAssertThrowsError(try response.authenticationSecret(now: now))
+        XCTAssertThrowsError(try response.submission())
+        XCTAssertThrowsError(try decode("READY", "SDK_AUTHORIZE", sdk: sdk.merging(["clientSecret": "synthetic-secret"]) { _, new in new }).authorizationIntent(now: now))
+        XCTAssertThrowsError(try decode("READY", "SDK_AUTHORIZE", sdk: ["authorizationHandle": "lai_synthetic", "expiresAt": expiry]).authorizationIntent(now: now))
+        XCTAssertFalse(response.description.contains("lai_synthetic"))
     }
 
     func testCheckoutSecretMustBelongToTheSameSessionAndAction() throws {
@@ -54,7 +80,8 @@ final class StripeActionResponseTests: XCTestCase {
         ] { XCTAssertThrowsError(try StripeActionResponse(value)) }
         for sdk: [String: Any] in [
             ["sessionHandle": "foreign"], ["sessionHandle": "cos_bad\n"], ["clientSecret": "private\nsecret"],
-            ["expiresAt": 123], ["expiresAt": "invalid"],
+            ["expiresAt": 123], ["expiresAt": "invalid"], ["authorizationHandle": "lai_bad\n"],
+            ["authenticationState": "UNKNOWN"], ["authorizationHandle": "cos_wrong"],
         ] { XCTAssertThrowsError(try decode("READY", "NONE", sdk: sdk)) }
         XCTAssertThrowsError(try StripeActionResponse(["version": 1, "status": "READY", "nextStep": "SDK_COLLECT_KYC",
                                                       "customer": ["missingFields": ["UNKNOWN_IDENTITY_FIELD"]]]))
