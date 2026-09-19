@@ -11,7 +11,7 @@ enum StripeNativeError: Error {
 struct StripeNativeOrder: CustomStringConvertible {
     let id: String
     let method: String
-    let intent: String
+    let intent: String?
     let flow: String
     let expiresAt: Date
     let publicKey: String
@@ -30,8 +30,7 @@ struct StripeNativeOrder: CustomStringConvertible {
               let method = order.paymentMethodType, ["APPLE_PAY", "CREDIT_DEBIT_CARD"].contains(method),
               let details = order.paymentMethodResponseDetails?.raw,
               details["sdkBootstrapType"] as? String == "STRIPE_CRYPTO_ONRAMP",
-              let intent = StripeNativeValue.identifier(details["providerIntentId"], prefix: "lai_"),
-              let flow = details["sdkFlow"] as? String, ["AUTHORIZE", "SEAMLESS"].contains(flow),
+              let flow = details["sdkFlow"] as? String, ["REGISTER", "AUTHORIZE", "SEAMLESS"].contains(flow),
               let expiry = PaymentActionJSON.integer(details["expiresAtEpochSeconds"]), expiry > 0,
               let sdkEnvironment = details["sdkEnvironment"] as? String,
               ["SANDBOX", "DEVELOPMENT", "PRODUCTION"].contains(sdkEnvironment),
@@ -53,6 +52,13 @@ struct StripeNativeOrder: CustomStringConvertible {
             merchant = value
         } else { merchant = nil }
         let actions = try PaymentActionDescriptor(order: order, environment: environment)
+        let intent = StripeNativeValue.identifier(details["providerIntentId"], prefix: "lai_")
+        if flow == "REGISTER" {
+            guard details["providerIntentId"] == nil || details["providerIntentId"] is NSNull
+            else { throw StripeNativeError.invalidOrder }
+        } else {
+            guard intent != nil else { throw StripeNativeError.invalidOrder }
+        }
         let required = ["READ_SUBMISSION": false, "READ_CUSTOMER_STATUS": false, "READ_LIMITS": false,
                         "COMPLETE_CUSTOMER_LINK": true, "CREATE_CUSTOMER_AUTH_TOKEN": true,
                         "PREPARE_CUSTOMER_AUTHORIZATION": true,

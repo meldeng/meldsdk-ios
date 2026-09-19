@@ -390,3 +390,13 @@ the existing order and reconcile through its declared action/state protocol. No 
 `recoverable` value authorizes automatic payment replay or a replacement order;
 `automaticRetryAllowed` remains false. The optional property and initializer remain source
 compatible; callers on older SDKs should apply the same conservative fallback when it is absent.
+
+### First-time SDK customer registration
+
+Stripe bootstraps may declare `sdkFlow: REGISTER` without a `providerIntentId`. Pass these orders
+unchanged to `Meld.mount`; this adapter checks/registers the customer through the provider SDK,
+then prepares authorization through the shared action endpoint on the existing order. Registration
+is not payment submission or settlement. Existing AUTHORIZE/SEAMLESS bootstraps still require their
+real intent identifier. Backend registration-stage support and this SDK change must be released
+before enabling the flow; older SDKs reject the new bootstrap. No provider/device acceptance or
+package publication is implied by local tests.

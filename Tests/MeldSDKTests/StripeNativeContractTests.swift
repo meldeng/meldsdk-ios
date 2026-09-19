@@ -15,6 +15,24 @@ final class StripeNativeContractTests: XCTestCase {
         XCTAssertEqual(Meld.capabilities(for: try order()).surface, "native-sdk")
     }
 
+    func testRegistrationBootstrapNeedsNoInventedProviderIntent() throws {
+        let registration = try order { root in
+            var details = root["paymentMethodResponseDetails"] as! [String: Any]
+            details["sdkFlow"] = "REGISTER"
+            details.removeValue(forKey: "providerIntentId")
+            root["paymentMethodResponseDetails"] = details
+        }
+        let value = try StripeNativeOrder(registration, environment: .sandbox)
+        XCTAssertEqual(value.flow, "REGISTER")
+        XCTAssertNil(value.intent)
+        XCTAssertEqual(Meld.capabilities(for: registration).surface, "native-sdk")
+        try rejected { root in
+            var details = root["paymentMethodResponseDetails"] as! [String: Any]
+            details["sdkFlow"] = "REGISTER"
+            root["paymentMethodResponseDetails"] = details
+        }
+    }
+
     func testBackendsWithoutLegalActionsCannotSelectTheNativeFlow() throws {
         for missing in ["READ_LEGAL_DISCLOSURE", "RECORD_LEGAL_EVIDENCE"] {
             try rejected { root in

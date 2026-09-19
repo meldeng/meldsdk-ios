@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class StripeFlowControllerTests: XCTestCase {
     func testNewPaymentOwnsFormsAndSdkFlowAndWaitsForServerSettlement() async throws {
-        let h = try FlowHarness(applePay: true)
+        let h = try FlowHarness(applePay: true, registration: true)
         h.driver.hasAccountResult = false
         h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("IN_PROGRESS", "WAIT_FOR_PROVIDER")]
         let outcome = try await h.flow.run()
@@ -361,8 +361,8 @@ private final class FlowHarness {
     let client = FlowClient(), store = FlowStore(), driver = FlowDriver(), forms = FlowForms()
     let lifetime = StripeFlowLifetime(), factory = FlowCounter()
     let flow: StripeFlowController
-    init(applePay: Bool = false) throws {
-        let order = try Self.order(applePay: applePay)
+    init(applePay: Bool = false, registration: Bool = false) throws {
+        let order = try Self.order(applePay: applePay, registration: registration)
         let counter = factory, driver = driver
         let request = applePay ? try order.paymentRequest() : nil
         flow = StripeFlowController(order: order, client: client, store: store, forms: forms, lifetime: lifetime, request: request,
@@ -391,13 +391,19 @@ private final class FlowHarness {
         if secret { sdk["clientSecret"] = "cos_synthetic_secret" }
         return .success(["version": 1, "status": status, "nextStep": next, "sdk": sdk])
     }
-    static func order(applePay: Bool = false) throws -> StripeNativeOrder {
-        let json: [String: Any] = ["id": "synthetic-order", "paymentMethodType": applePay ? "APPLE_PAY" : "CREDIT_DEBIT_CARD",
+    static func order(applePay: Bool = false, registration: Bool = false) throws -> StripeNativeOrder {
+        var json: [String: Any] = ["id": "synthetic-order", "paymentMethodType": applePay ? "APPLE_PAY" : "CREDIT_DEBIT_CARD",
             "headlessPresentation": ["surface": "NATIVE_SDK", "protocol": "STRIPE_CRYPTO_ONRAMP", "version": 1],
             "payload": ["serviceProvider": "TEST_PROVIDER", "sourceAmount": 20, "sourceCurrencyCode": "USD", "countryCode": "US", "destinationWalletAddress": "wallet-synthetic"],
             "paymentMethodResponseDetails": ["sdkBootstrapType": "STRIPE_CRYPTO_ONRAMP", "providerIntentId": "lai_synthetic", "sdkFlow": "AUTHORIZE", "sdkEnvironment": "SANDBOX", "expiresAtEpochSeconds": 1_900_000_000, "continuationToken": "synthetic-bearer", "clientConfiguration": ["publicKey": "pk_test_synthetic", "walletNetwork": "base", "merchantIdentifier": "merchant.example.stripe"]],
             "paymentActions": ["version": 1, "endpoint": "/crypto/order/headless/onramp/TEST_PROVIDER/synthetic-order/actions", "bearerTokenPointer": "/paymentMethodResponseDetails/continuationToken",
                 "operations": ["READ_SUBMISSION", "READ_CUSTOMER_STATUS", "READ_LIMITS", "READ_LEGAL_DISCLOSURE", "RECORD_LEGAL_EVIDENCE", "COMPLETE_CUSTOMER_LINK", "CREATE_CUSTOMER_AUTH_TOKEN", "PREPARE_CUSTOMER_AUTHORIZATION", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "REFRESH_QUOTE"].map { ["operation": $0, "idempotencyKeyRequired": !$0.hasPrefix("READ_")] as [String: Any] }]]
+        if registration {
+            var details = json["paymentMethodResponseDetails"] as! [String: Any]
+            details["sdkFlow"] = "REGISTER"
+            details.removeValue(forKey: "providerIntentId")
+            json["paymentMethodResponseDetails"] = details
+        }
         return try StripeNativeOrder(MeldOrder.from(jsonData: JSONSerialization.data(withJSONObject: json)), environment: .sandbox)
     }
 }
