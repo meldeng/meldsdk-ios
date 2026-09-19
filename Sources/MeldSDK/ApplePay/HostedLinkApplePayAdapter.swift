@@ -125,20 +125,18 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         case "onramp_api.load_error", "onramp_api.commit_error", "onramp_api.polling_error",
              "onramp_api.error":
             let data = json["data"] as? [String: Any]
-            // The provider's own error code travels in `detail`. A host cannot tell "start a new
-            // order" from "fall back to hosted checkout" from the event name alone, and collapsing
-            // that distinction would cost a real recovery path — so it is carried, not dropped.
+            // Retain legacy diagnostics, but integrators route recovery through shared advice.
             let providerCode = data?["errorCode"] as? String
             return [.error(MeldError(
                 orderId: orderId,
                 code: eventName,
                 message: data?["errorMessage"] as? String ?? "The provider reported an error.",
                 detail: providerCode,
-                // Only two outcomes are terminal: a polling failure (the order is spent) and an
-                // init failure (the provider will reject the same order the same way). Everything
-                // else — including a declined commit — can be retried on this order, which is what
-                // the app this was ported from offered.
-                recoverable: eventName != "onramp_api.polling_error" && providerCode != "ERROR_CODE_INIT"))]
+                // Preserve the legacy presentation hint. Shared advice governs recovery and
+                // never treats a reusable surface as permission to submit payment again.
+                recoverable: eventName != "onramp_api.polling_error" && providerCode != "ERROR_CODE_INIT",
+                headlessError: providerCode == "ERROR_CODE_INIT"
+                    ? MeldHeadlessError(category: .stateChanged, recovery: .readState) : nil))]
 
         default:
             // The page emits progress events we have no Meld equivalent for. Tolerated, not an error.

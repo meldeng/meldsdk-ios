@@ -101,23 +101,29 @@ final class HostedLinkApplePayTests: XCTestCase {
         XCTAssertEqual(change.providerStatus, "onramp_api.polling_success")
     }
 
-    func testErrorCarriesTheProviderCodeSoAHostCanChooseARecoveryPath() {
-        // Without the provider's own code a host cannot tell "start a new order" from "fall back to
-        // the provider's full checkout", and would have to offer the same dead end for both.
+    func testErrorRetainsLegacyDiagnosticsAndPublishesSharedRecovery() {
+        // Diagnostics stay compatible; shared advice never authorizes another financial request.
         let loadError = events("onramp_api.load_error", data: #"{"errorMessage":"nope","errorCode":"ERROR_CODE_X"}"#)
         guard case let .error(recoverable) = loadError.first else { return XCTFail("expected .error") }
         XCTAssertEqual(recoverable.detail, "ERROR_CODE_X")
         XCTAssertTrue(recoverable.recoverable)
+        XCTAssertEqual(recoverable.headlessError?.category, .outcomeUnknown)
+        XCTAssertEqual(recoverable.headlessError?.recovery, .readState)
 
         // A spent order cannot be retried on the same link.
         let pollingError = events("onramp_api.polling_error", data: #"{"errorMessage":"gone"}"#)
         guard case let .error(terminal) = pollingError.first else { return XCTFail("expected .error") }
         XCTAssertFalse(terminal.recoverable)
+        XCTAssertEqual(terminal.headlessError?.category, .outcomeUnknown)
+        XCTAssertEqual(terminal.headlessError?.recovery, .readState)
 
         // Nor can an init failure.
         let initError = events("onramp_api.load_error", data: #"{"errorCode":"ERROR_CODE_INIT"}"#)
         guard case let .error(initFailure) = initError.first else { return XCTFail("expected .error") }
         XCTAssertFalse(initFailure.recoverable)
+        XCTAssertEqual(initFailure.headlessError?.category, .stateChanged)
+        XCTAssertEqual(initFailure.headlessError?.recovery, .readState)
+        XCTAssertEqual(initFailure.headlessError?.automaticRetryAllowed, false)
     }
 
     func testUnmappedEventIsIgnoredRatherThanTreatedAsFailure() {

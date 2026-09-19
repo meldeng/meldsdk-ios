@@ -2,6 +2,26 @@ import XCTest
 @testable import MeldSDK
 
 final class HeadlessErrorTests: XCTestCase {
+    func testLegacyCallbackErrorsPreserveUncertaintyRegardlessOfRecoverability() {
+        for recoverable in [false, true] {
+            let error = MeldError(orderId: "synthetic", code: "unknown", message: "synthetic", recoverable: recoverable)
+            XCTAssertEqual(error.headlessError?.category, .outcomeUnknown)
+            XCTAssertEqual(error.headlessError?.recovery, .readState)
+            XCTAssertEqual(error.headlessError?.automaticRetryAllowed, false)
+            XCTAssertEqual(error.recoverable, recoverable)
+        }
+    }
+
+    func testExplicitActionAdviceSurvivesCallbackConstruction() throws {
+        for (category, recovery) in HeadlessErrorFixtures.pairs {
+            let advice = try XCTUnwrap(MeldHeadlessError.decode(
+                HeadlessErrorFixtures.json(category, recovery), operation: "READ_SUBMISSION"))
+            let error = MeldError(orderId: "synthetic", code: "action", message: "synthetic",
+                                  recoverable: false, headlessError: advice)
+            XCTAssertEqual(error.headlessError, advice)
+        }
+    }
+
     func testEveryPublicPairIsAcceptedAndUnknownFieldsAreNotRetained() throws {
         for (category, recovery) in HeadlessErrorFixtures.pairs {
             let json = HeadlessErrorFixtures.json(category, recovery).merging(["secret": "synthetic-private"]) { $1 }

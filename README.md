@@ -376,3 +376,17 @@ Building in React Native? Use the
 same `configure → capabilities → mount → events` flow, exposed as a `<MeldWidget>` component, for
 **iOS and Android**. It lives in its own repo with its own README and example app, and consumes
 this SDK as its iOS dependency (the `MeldSDK` pod).
+
+
+### Shared callback recovery
+
+Every newly constructed `MeldError` includes version-1 `headlessError` advice. Errors without
+validated action metadata default to `OUTCOME_UNKNOWN / READ_STATE`, independently of the legacy
+`recoverable` presentation hint. An expired hosted link reports `STATE_CHANGED / READ_STATE`.
+Explicit action advice, including retries of a known read-only operation, is preserved.
+
+Use this shared metadata to choose recovery instead of provider codes or raw messages. Preserve
+the existing order and reconcile through its declared action/state protocol. No category or
+`recoverable` value authorizes automatic payment replay or a replacement order;
+`automaticRetryAllowed` remains false. The optional property and initializer remain source
+compatible; callers on older SDKs should apply the same conservative fallback when it is absent.

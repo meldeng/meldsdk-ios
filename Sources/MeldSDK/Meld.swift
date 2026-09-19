@@ -97,8 +97,9 @@ public struct MeldError {
     public let message: String
     /// Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be nil.
     public let detail: String?
+    /// Legacy presentation hint; never authorizes payment replay or a replacement order.
     public let recoverable: Bool
-    /// Validated shared recovery advice, when available. Does not authorize a new financial attempt.
+    /// Shared recovery advice. Unclassified failures preserve the existing financial attempt.
     public let headlessError: MeldHeadlessError?
 
     public init(orderId: String?, code: String, message: String, detail: String? = nil, recoverable: Bool,
@@ -108,7 +109,7 @@ public struct MeldError {
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
-        self.headlessError = headlessError
+        self.headlessError = headlessError ?? MeldHeadlessError(category: .outcomeUnknown, recovery: .readState)
     }
 }
 
