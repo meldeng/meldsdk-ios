@@ -22,6 +22,45 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(h.driver.logouts, 1)
     }
 
+    func testRegistrationNextStepRecoversAccountCheckDisagreementOnSameOrder() async throws {
+        let h = try FlowHarness(registration: true)
+        h.client.responses = [FlowHarness.bootstrap[0], FlowHarness.read("NOT_STARTED", "SDK_REGISTER_CUSTOMER")] +
+            Array(FlowHarness.bootstrap.dropFirst()) + [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(Array(h.driver.calls.prefix(3)), ["hasAccount", "register", "authorize"])
+        let preparation = h.client.calls.filter { $0.operation == "PREPARE_CUSTOMER_AUTHORIZATION" }
+        XCTAssertEqual(preparation.count, 2)
+        XCTAssertNotEqual(preparation[0].key, preparation[1].key)
+        XCTAssertEqual(h.driver.calls.filter { $0 == "register" }.count, 1)
+        await h.flow.close()
+    }
+
+    func testRepeatedRegistrationRequirementNeverRepeatsRegistrationOrStartsPayment() async throws {
+        for hasAccount in [false, true] {
+            let h = try FlowHarness(registration: true)
+            h.driver.hasAccountResult = hasAccount
+            h.client.responses = [FlowHarness.bootstrap[0], FlowHarness.read("NOT_STARTED", "SDK_REGISTER_CUSTOMER")]
+            if hasAccount { h.client.responses.append(FlowHarness.read("NOT_STARTED", "SDK_REGISTER_CUSTOMER")) }
+            do { _ = try await h.flow.run(); XCTFail("Repeated registration must stop") } catch {}
+            XCTAssertEqual(h.driver.calls, ["hasAccount", "register"])
+            XCTAssertFalse(h.store.value.submissionStarted)
+            XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+            await h.flow.close()
+        }
+    }
+
+    func testRegistrationInstructionCannotRestartExistingFinancialSession() async throws {
+        let h = try FlowHarness(registration: true)
+        h.driver.failAuthentication = true
+        h.client.responses = [FlowHarness.resume(), FlowHarness.authToken,
+                              FlowHarness.read("NOT_STARTED", "SDK_REGISTER_CUSTOMER")]
+        do { _ = try await h.flow.run(); XCTFail("Existing session cannot restart registration") } catch {}
+        XCTAssertEqual(h.driver.calls, ["authenticate", "hasAccount"])
+        XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+        await h.flow.close()
+    }
+
     func testResumeRestoresAuthenticationAndUsesOnlyTheExistingSession() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.resume(), FlowHarness.authToken, FlowHarness.customer(next: "REFRESH_QUOTE"),
