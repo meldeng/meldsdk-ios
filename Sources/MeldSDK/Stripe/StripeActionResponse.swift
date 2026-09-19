@@ -52,6 +52,9 @@ struct StripeActionResponse: CustomStringConvertible {
             missingFields = fields
             hasCustomer = true
         } else { missingFields = []; hasCustomer = false }
+        if next == "SDK_REGISTER_CUSTOMER", value["sdk"] != nil {
+            throw StripeNativeError.invalidResponse
+        }
     }
 
     func validateCustomerAction(requiresDetails: Bool) throws {
@@ -78,6 +81,14 @@ struct StripeActionResponse: CustomStringConvertible {
               session == nil, secret == nil, let intent, let expiresAt, expiresAt > now
         else { throw StripeNativeError.invalidResponse }
         return intent
+    }
+
+    func requiresRegistration() throws -> Bool {
+        guard next == "SDK_REGISTER_CUSTOMER" else { return false }
+        guard status == "NOT_STARTED", session == nil, secret == nil, expiresAt == nil,
+              intent == nil, authentication == nil, !hasCustomer
+        else { throw StripeNativeError.invalidResponse }
+        return true
     }
 
     func checkoutSecret(session expected: String, now: Date = Date()) throws -> String {
@@ -127,7 +138,7 @@ struct StripeActionResponse: CustomStringConvertible {
     private static let statuses: Set<String> = ["READY", "NOT_STARTED", "PENDING", "AUTHORIZED", "VERIFIED", "REJECTED",
         "NOT_AVAILABLE", "UNKNOWN", "REQUIRES_PAYMENT", "QUOTE_READY", "FULFILLMENT_PROCESSING", "FULFILLMENT_COMPLETE",
         "SUCCEEDED", "FAILED", "SUBMITTED", "IN_PROGRESS", "EXPIRED"]
-    private static let steps: Set<String> = ["NONE", "SDK_AUTHORIZE", "SDK_REAUTHORIZE", "SDK_COLLECT_KYC",
+    private static let steps: Set<String> = ["NONE", "SDK_REGISTER_CUSTOMER", "SDK_AUTHORIZE", "SDK_REAUTHORIZE", "SDK_COLLECT_KYC",
         "SDK_VERIFY_IDENTITY", "SDK_REGISTER_WALLET", "SDK_COLLECT_PAYMENT_METHOD", "CREATE_PAYMENT_SESSION",
         "REFRESH_QUOTE", "CONFIRM_PAYMENT", "RETRY", "COMPLETE", "REGION_NOT_SUPPORTED", "START_NEW_ORDER",
         "WAIT_FOR_PAYMENT", "WAIT_FOR_PROVIDER", "UNKNOWN"]

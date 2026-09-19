@@ -400,3 +400,8 @@ is not payment submission or settlement. Existing AUTHORIZE/SEAMLESS bootstraps 
 real intent identifier. Backend registration-stage support and this SDK change must be released
 before enabling the flow; older SDKs reject the new bootstrap. No provider/device acceptance or
 package publication is implied by local tests.
+
+If authorization preparation reports `SDK_REGISTER_CUSTOMER` after a positive SDK account check,
+the adapter permits one registration on a REGISTER bootstrap and prepares consent again with a new
+invocation. It rejects repeated registration instructions and attempts to register during financial
+session recovery. No application-side provider routing or new order is required.

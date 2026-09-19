@@ -130,7 +130,15 @@ final class StripeFlowController {
             try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
         }
         // Preparation also reuses initial consent; its expiry is independent of the bearer lifetime.
-        let intent = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID()).authorizationIntent(now: now())
+        var prepared = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID())
+        if try prepared.requiresRegistration() {
+            guard hasAccount, state == .bootstrap, order.flow == "REGISTER", session == nil,
+                  !financialStarted else { throw StripeNativeError.invalidResponse }
+            let registration = try await forms.registration()
+            try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
+            prepared = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID())
+        }
+        let intent = try prepared.authorizationIntent(now: now())
         let customer = try await sdk { try await $0.authorize(intent: intent, from: self.forms.presenter) }
         let linked = try await action("COMPLETE_CUSTOMER_LINK", fields: ["customerHandle": customer], key: UUID())
         try linked.validateCustomerAction(requiresDetails: false)
