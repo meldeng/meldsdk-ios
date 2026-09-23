@@ -200,7 +200,7 @@ this binary does not implement; capability inspection and mounting use the same 
 | `UPHOLD_WIDGET` | `CREDIT_DEBIT_CARD` | `EMBEDDED_WIDGET` |
 | `BANXA_CHECKOUT` | `CREDIT_DEBIT_CARD` | `VENDOR_SDK` |
 | `BANXA_CHECKOUT` | `APPLE_PAY` | `VENDOR_SDK` |
-| `MELD_WALLET_TOKEN` | `APPLE_PAY` | `SYSTEM_WALLET_TOKEN` |
+| `MELD_WALLET_TOKEN` | `APPLE_PAY` | `NATIVE_TOKEN` |
 | `COINBASE_APPLE_PAY` | `APPLE_PAY` | `PROVIDER_HOSTED` |
 
 Unknown versions, mismatched surfaces/methods, invalid descriptors and unsupported payloads return

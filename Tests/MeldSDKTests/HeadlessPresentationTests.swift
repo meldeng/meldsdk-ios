@@ -17,7 +17,7 @@ final class HeadlessPresentationTests: XCTestCase {
         return try MeldOrder.from(jsonData: JSONSerialization.data(withJSONObject: json))
     }
 
-    private func descriptor(_ surface: String = "SYSTEM_WALLET_TOKEN", _ protocolName: String = "MELD_WALLET_TOKEN",
+    private func descriptor(_ surface: String = "NATIVE_TOKEN", _ protocolName: String = "MELD_WALLET_TOKEN",
                             version: Any = 1) -> [String: Any] {
         ["surface": surface, "protocol": protocolName, "version": version]
     }
@@ -32,6 +32,23 @@ final class HeadlessPresentationTests: XCTestCase {
         XCTAssertThrowsError(try Meld.mount(order)) {
             guard case MeldApplePayError.invalidOrder = $0 else { return XCTFail("Expected context validation") }
         }
+    }
+
+    func testMeldWalletTokenUnderAnUnpublishedSurfaceIsUnsupported() throws {
+        try assertUnsupported(order(presentation: descriptor("SYSTEM_WALLET_TOKEN", "MELD_WALLET_TOKEN")))
+    }
+
+    func testShippedRegistrationsAreExactlyWhatTheCatalogPublishes() {
+        // network-partner-domain connector presentations, less Stripe's, which this SDK does not implement.
+        let catalog: Set = [
+            MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "MERCURYO_WIDGET"),
+            MeldAdapterPresentation("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN"),
+            MeldAdapterPresentation("CREDIT_DEBIT_CARD", "VENDOR_SDK", "BANXA_CHECKOUT"),
+            MeldAdapterPresentation("APPLE_PAY", "VENDOR_SDK", "BANXA_CHECKOUT"),
+            MeldAdapterPresentation("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY"),
+            MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET"),
+        ]
+        XCTAssertEqual(Set(Meld.adapters.flatMap(\.presentations)), catalog)
     }
 
     func testBanxaProtocolDoesNotNeedProviderNameOrRegistryPrecedence() throws {
@@ -91,7 +108,7 @@ final class HeadlessPresentationTests: XCTestCase {
     }
 
     func testUnknownProtocolVersionSurfaceAndMethodNeverUseLegacyFallback() throws {
-        for declaration in [descriptor("SYSTEM_WALLET_TOKEN", "FUTURE_PROTOCOL"), descriptor(version: 2),
+        for declaration in [descriptor("NATIVE_TOKEN", "FUTURE_PROTOCOL"), descriptor(version: 2),
                             descriptor("NATIVE_SDK", "MELD_WALLET_TOKEN"),
                             descriptor("NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP")] {
             let order = try order(presentation: declaration)
@@ -105,8 +122,8 @@ final class HeadlessPresentationTests: XCTestCase {
         let malformed: [Any] = [NSNull(), "MELD_WALLET_TOKEN", [], [:],
                                 descriptor(version: true), descriptor(version: "1"), descriptor(version: 0),
                                 descriptor(version: -1), descriptor(version: 1.5), descriptor(version: 2147483648),
-                                descriptor("system_wallet_token"), descriptor("SYSTEM_WALLET_TOKEN", ""),
-                                descriptor("SYSTEM_WALLET_TOKEN", "MELD_WALLET_TOKEN\n")]
+                                descriptor("native_token"), descriptor("NATIVE_TOKEN", ""),
+                                descriptor("NATIVE_TOKEN", "MELD_WALLET_TOKEN\n")]
         for declaration in malformed {
             let order = try order(presentation: declaration)
             XCTAssertNil(order.headlessPresentation)
