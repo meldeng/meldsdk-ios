@@ -34,7 +34,7 @@ struct BanxaCardAdapter: MeldAdapter {
     ///
     /// Registry order matters: `MercuryoCardAdapter` matches any CREDIT_DEBIT_CARD + IFRAME order, so
     /// Banxa must be registered ahead of it.
-    let presentations = [MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "BANXA_CHECKOUT")]
+    let presentations = [MeldAdapterPresentation("CREDIT_DEBIT_CARD", "VENDOR_SDK", "BANXA_CHECKOUT")]
 
     func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
         order.paymentMethodResponseDetails?.renderMode == "IFRAME"

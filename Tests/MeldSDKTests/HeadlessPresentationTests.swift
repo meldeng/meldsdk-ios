@@ -59,16 +59,21 @@ final class HeadlessPresentationTests: XCTestCase {
     }
 
     func testDeclaredCardProtocolsValidateTheirPayloadInsteadOfFallingThrough() throws {
-        let examples: [(String, [String: Any], Any.Type)] = [
-            ("MERCURYO_WIDGET", ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://sandbox-exchange.mrcr.io/x"],
+        // Each row declares the surface its connector publishes: Mercuryo and Uphold are provider
+        // widgets we embed; Banxa's card form is presented by Banxa's own SDK from a session token.
+        let examples: [(String, String, [String: Any], Any.Type)] = [
+            ("EMBEDDED_WIDGET", "MERCURYO_WIDGET",
+             ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://sandbox-exchange.mrcr.io/x"],
              MercuryoCardAdapter.self),
-            ("BANXA_CHECKOUT", ["renderMode": "IFRAME", "sdkSessionToken": "test-primer-token"], BanxaCardAdapter.self),
-            ("UPHOLD_WIDGET", ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://api.enterprise.sandbox.uphold.com/x"],
+            ("VENDOR_SDK", "BANXA_CHECKOUT", ["renderMode": "IFRAME", "sdkSessionToken": "test-primer-token"],
+             BanxaCardAdapter.self),
+            ("EMBEDDED_WIDGET", "UPHOLD_WIDGET",
+             ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://api.enterprise.sandbox.uphold.com/x"],
              UpholdCardAdapter.self),
         ]
-        for (protocolName, details, expected) in examples {
+        for (surface, protocolName, details, expected) in examples {
             let order = try order(method: "CREDIT_DEBIT_CARD",
-                                  presentation: descriptor("EMBEDDED_WIDGET", protocolName), details: details)
+                                  presentation: descriptor(surface, protocolName), details: details)
             let adapter = try XCTUnwrap(Meld.adapter(for: order))
             XCTAssertEqual(String(describing: type(of: adapter)), String(describing: expected))
         }
@@ -76,8 +81,13 @@ final class HeadlessPresentationTests: XCTestCase {
                                     presentation: descriptor("EMBEDDED_WIDGET", "MERCURYO_WIDGET"),
                                     details: ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://other.example/x"]))
         try assertUnsupported(order(method: "CREDIT_DEBIT_CARD",
-                                    presentation: descriptor("EMBEDDED_WIDGET", "BANXA_CHECKOUT"),
+                                    presentation: descriptor("VENDOR_SDK", "BANXA_CHECKOUT"),
                                     details: ["renderMode": "IFRAME", "serviceProviderWidgetUrl": "https://sandbox-exchange.mrcr.io/x"]))
+        // The surface is part of the dispatch key, not only the protocol: a valid Banxa payload
+        // declared under a surface Banxa's adapter does not register is not presented as Banxa.
+        try assertUnsupported(order(method: "CREDIT_DEBIT_CARD",
+                                    presentation: descriptor("EMBEDDED_WIDGET", "BANXA_CHECKOUT"),
+                                    details: ["renderMode": "IFRAME", "sdkSessionToken": "test-primer-token"]))
     }
 
     func testUnknownProtocolVersionSurfaceAndMethodNeverUseLegacyFallback() throws {
