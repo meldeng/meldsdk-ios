@@ -55,6 +55,7 @@ struct StripeNativeOrder: CustomStringConvertible {
         let actions = try PaymentActionDescriptor(order: order, environment: environment)
         let required = ["READ_SUBMISSION": false, "READ_CUSTOMER_STATUS": false, "READ_LIMITS": false,
                         "COMPLETE_CUSTOMER_LINK": true, "CREATE_CUSTOMER_AUTH_TOKEN": true,
+                        "PREPARE_CUSTOMER_AUTHORIZATION": true,
                         "CREATE_PAYMENT_SESSION": true, "CONFIRM_PAYMENT": true, "REFRESH_QUOTE": true]
         guard required.allSatisfy({ actions.operations[$0.key] == $0.value }) else { throw StripeNativeError.invalidOrder }
         self.id = id; self.method = method; self.intent = intent; self.flow = flow
