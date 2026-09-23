@@ -68,7 +68,8 @@ final class ApplePayProcessingTests: XCTestCase {
         guard case .paymentSubmitted = outcome.events[0] else { return XCTFail("expected paymentSubmitted") }
         guard case let .statusChange(change) = outcome.events[1] else { return XCTFail("expected statusChange") }
         XCTAssertEqual(change.status, .pending)
-        XCTAssertEqual(change.providerStatus, "new")
+        XCTAssertNil(change.providerStatus)
+        XCTAssertNil(change.raw)
         XCTAssertEqual(change.orderId, "ord1")
     }
 
@@ -85,7 +86,8 @@ final class ApplePayProcessingTests: XCTestCase {
         let outcome = ApplePayResponseInterpreter.interpret(httpStatus: 200, json: json, orderId: "ord1")
 
         XCTAssertFalse(outcome.succeeded)
-        guard case .statusChange = outcome.events[1] else { return XCTFail("expected statusChange") }
+        guard case .statusChange = outcome.events[0] else { return XCTFail("expected statusChange") }
+        XCTAssertFalse(outcome.events.contains { if case .paymentSubmitted = $0 { return true }; return false })
         guard case let .error(error) = outcome.events.last else { return XCTFail("expected trailing error") }
         XCTAssertFalse(error.recoverable)
     }
@@ -95,6 +97,7 @@ final class ApplePayProcessingTests: XCTestCase {
         let outcome = ApplePayResponseInterpreter.interpret(httpStatus: 200, json: json, orderId: nil)
         XCTAssertFalse(outcome.succeeded)
         guard case .cancel = outcome.events.last else { return XCTFail("expected trailing cancel") }
+        XCTAssertFalse(outcome.events.contains { if case .paymentSubmitted = $0 { return true }; return false })
     }
 
     func testProviderErrorCodeIsTreatedAsFailure() {
@@ -104,8 +107,9 @@ final class ApplePayProcessingTests: XCTestCase {
         XCTAssertFalse(outcome.succeeded)
         XCTAssertEqual(outcome.events.count, 1)
         guard case let .error(error) = outcome.events[0] else { return XCTFail("expected error") }
-        XCTAssertEqual(error.code, "PAYMENT_DECLINED")
-        XCTAssertEqual(error.message, "Card declined")
+        XCTAssertEqual(error.code, "PAYMENT_NOT_ACCEPTED")
+        XCTAssertNil(error.detail)
+        XCTAssertFalse(error.message.contains("Card declined"))
     }
 
     func testNon2xxTransportStatusIsFailure() {
@@ -113,7 +117,8 @@ final class ApplePayProcessingTests: XCTestCase {
             httpStatus: 400, json: ["message": "bad request"], orderId: nil)
         XCTAssertFalse(outcome.succeeded)
         guard case let .error(error) = outcome.events[0] else { return XCTFail("expected error") }
-        XCTAssertEqual(error.message, "bad request")
+        XCTAssertEqual(error.code, "PAYMENT_NOT_ACCEPTED")
+        XCTAssertFalse(error.message.contains("bad request"))
     }
 
     func testProviderStatusIntAbove400IsFailure() {

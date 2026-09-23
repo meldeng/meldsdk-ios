@@ -28,5 +28,5 @@ Pod::Spec.new do |s|
   # Primer presents the Banxa Apple Pay sheet and creates the payment from the order's client token.
   # Taken directly rather than through Banxa's wrapper, which is SPM-only and adds nothing we use.
   s.dependency 'PrimerSDK', '~> 2.49'
-  s.frameworks       = 'UIKit', 'WebKit', 'PassKit', 'Contacts'
+  s.frameworks       = 'UIKit', 'WebKit', 'PassKit', 'Contacts', 'SafariServices', 'Security', 'CryptoKit'
 end
