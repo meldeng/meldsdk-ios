@@ -175,6 +175,11 @@ public final class MeldWidgetHandle {
     }
 
     public func unmount() { session.unmount() }
+    deinit {
+        let session = session
+        if Thread.isMainThread { session.unmount() }
+        else { DispatchQueue.main.async { session.unmount() } }
+    }
 }
 
 public enum Meld {
@@ -184,6 +189,7 @@ public enum Meld {
     static let adapters: [MeldAdapter] = [
         UpholdCardAdapter(), BanxaCardAdapter(), MercuryoCardAdapter(),
         HostedLinkApplePayAdapter(), BanxaApplePayAdapter(), MercuryoApplePayAdapter(),
+        StripeNativeAdapter(),
     ]
     private static let registry: MeldAdapterRegistry = {
         do { return try MeldAdapterRegistry(adapters) }
