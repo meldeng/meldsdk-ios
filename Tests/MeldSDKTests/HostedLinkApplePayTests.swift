@@ -159,4 +159,11 @@ final class HostedLinkApplePayTests: XCTestCase {
         XCTAssertEqual(error.code, "apple_pay_button_not_found")
         XCTAssertTrue(error.recoverable, "offer another method rather than retry the same page")
     }
+
+    func testMessagesFromUnknownNativeHandlersAreIgnored() {
+        let mapped = HostedLinkApplePayAdapter.interpret(
+            ["handler": "unknownHandler", "body": #"{"eventName":"onramp_api.load_success","data":{}}"#],
+            orderId: "o1", host: nil)
+        XCTAssertTrue(mapped.isEmpty)
+    }
 }

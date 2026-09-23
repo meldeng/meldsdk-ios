@@ -7,8 +7,8 @@ import UIKit
 //   Meld.capabilities(for:)
 //   Meld.mount(order, into:, handlers:)
 //   handle.unmount()
-// The order's paymentMethodType and renderMode select the provider widget to embed, so
-// supporting a new provider does not change this API. Supported today: Mercuryo card.
+// The order's versioned presentation protocol selects its adapter. Older stored orders use
+// an isolated compatibility path; adding an adapter does not change this public API.
 
 public enum MeldEnvironment: String {
     case sandbox
@@ -23,10 +23,17 @@ public struct MeldOrder {
     public let id: String?
     public let paymentMethodType: String?
     /// `payload.serviceProvider` from the headless order response — the provider that will process
-    /// this order (e.g. "BANXA", "MERCURYO"). Adapters are per-provider, so this is what an adapter
-    /// selects on when the order carries no widget host to identify it by.
+    /// this order (e.g. "BANXA", "MERCURYO"). Retained for display and legacy compatibility;
+    /// declared protocol dispatch does not use provider identity.
     public let serviceProvider: String?
     public let paymentMethodResponseDetails: Details?
+    let presentationDeclaration: HeadlessPresentationDeclaration
+
+    /// Server-declared protocol metadata, including well-formed values this binary cannot present.
+    public var headlessPresentation: MeldHeadlessPresentation? {
+        if case .declared(let value) = presentationDeclaration { return value }
+        return nil
+    }
 
     public struct Details {
         public let serviceProviderWidgetUrl: String?
@@ -56,7 +63,8 @@ public struct MeldOrder {
             id: dict["id"] as? String,
             paymentMethodType: dict["paymentMethodType"] as? String,
             serviceProvider: serviceProvider,
-            paymentMethodResponseDetails: details)
+            paymentMethodResponseDetails: details,
+            presentationDeclaration: .decode(order: dict))
     }
 
     public static func from(jsonString: String) throws -> MeldOrder {
@@ -170,25 +178,15 @@ public final class MeldWidgetHandle {
 public enum Meld {
     public private(set) static var environment: MeldEnvironment = .sandbox
 
-    // Adapter registry — the only place provider knowledge lives. Dispatch is on
-    // (paymentMethodType, renderMode); first match wins. Supporting a new provider is a new
-    // entry here, never a change to the public API or the generic widget host.
-    // Order matters only where matchers overlap. The card adapters still overlap (Uphold host-gates
-    // ahead of the generic IFRAME catch-all, which must stay last); the Apple Pay adapters do not —
-    // they select on disjoint presentation shapes, so neither can claim the other's order.
+    // Declared protocols are indexed explicitly. Registration order matters only for legacy orders.
     static let adapters: [MeldAdapter] = [
-        UpholdCardAdapter(),
-        // Banxa carries no widget URL at all (it renders from an SDK token), so it must come before
-        // the Mercuryo card adapter — which matches any CREDIT_DEBIT_CARD + IFRAME order and would
-        // otherwise claim it and then fail on the missing serviceProviderWidgetUrl.
-        BanxaCardAdapter(),
-        MercuryoCardAdapter(),
-        HostedLinkApplePayAdapter(),
-        // Ahead of MercuryoApplePayAdapter, which treats native as the default and would otherwise
-        // claim a Banxa order whose presentation this build did not recognise.
-        BanxaApplePayAdapter(),
-        MercuryoApplePayAdapter(),
+        UpholdCardAdapter(), BanxaCardAdapter(), MercuryoCardAdapter(),
+        HostedLinkApplePayAdapter(), BanxaApplePayAdapter(), MercuryoApplePayAdapter(),
     ]
+    private static let registry: MeldAdapterRegistry = {
+        do { return try MeldAdapterRegistry(adapters) }
+        catch { preconditionFailure("Duplicate built-in Meld presentation registration") }
+    }()
 
     public static func configure(environment: MeldEnvironment) {
         self.environment = environment
@@ -196,6 +194,16 @@ public enum Meld {
 
     public static func capabilities(for order: MeldOrder) -> MeldCapabilities {
         adapter(for: order)?.capabilities
+            ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
+    }
+
+    /// Advisory support for a quote or payment method before creating an order. This only checks
+    /// the installed adapter registry: it does not validate eligibility, Apple Pay availability,
+    /// legal evidence or an order's credentials. Check `capabilities(for: order)` again before mount.
+    /// Missing declarations must not be inferred from a provider name or legacy payload fields.
+    public static func capabilities(for presentation: MeldHeadlessPresentation,
+                                    paymentMethodType: String) -> MeldCapabilities {
+        registry.adapter(for: presentation, paymentMethodType: paymentMethodType)?.capabilities
             ?? MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
     }
 
@@ -233,15 +241,11 @@ public enum Meld {
         return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session)
     }
 
-    /// First registered adapter that handles the order, or nil if none do.
-    ///
-    /// An order whose `presentation` this build does not recognise resolves to nil rather than
-    /// falling through to the next adapter: a newer backend shape must surface as "unsupported
-    /// order", not be mishandled by an adapter that happens to match on payment method.
+    /// Capabilities and mount share authoritative protocol dispatch and legacy replay compatibility.
     static func adapter(for order: MeldOrder) -> MeldAdapter? {
-        if case .unrecognized = order.presentation { return nil }
-        return adapters.first { $0.matches(order) }
+        registry.adapter(for: order)
     }
+
 }
 
 // MARK: - Native Apple Pay

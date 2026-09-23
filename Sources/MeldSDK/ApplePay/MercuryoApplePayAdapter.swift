@@ -27,6 +27,16 @@ struct MercuryoApplePayAdapter: MeldAdapter {
     // used to reach `mount` and fail with a precise "missing X" error, and would instead fall out
     // of dispatch as an unhelpful "unsupported order". The collision this fixes is the real one —
     // a provider-hosted order must not be built into a PKPaymentRequest.
+    let presentations = [MeldAdapterPresentation("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        let details = order.paymentMethodResponseDetails
+        return order.hasCompatibleLegacyPresentation("NATIVE_TOKEN")
+            && ["sessionToken", "merchantTransactionId", "merchantIdentifier"].allSatisfy {
+                (details?[$0] as? String)?.isEmpty == false
+            }
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         guard order.paymentMethodType == "APPLE_PAY" else { return false }
         switch order.presentation {
