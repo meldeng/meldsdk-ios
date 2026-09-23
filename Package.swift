@@ -18,12 +18,16 @@ let package = Package(
         // toolchain floor for every integrator. Primer ships on both CocoaPods and SPM at
         // swift-tools 5.3, so going direct removes both problems.
         .package(url: "https://github.com/primer-io/primer-sdk-ios", from: "2.49.0"),
+        // The onramp product is absent from Stripe's 25.11 Swift package. Keep both managers pinned
+        // to the same reviewed preview API; updating it requires native flow and pod graph validation.
+        .package(url: "https://github.com/stripe/stripe-ios-spm", exact: "26.11.0"),
     ],
     targets: [
         .target(
             name: "MeldSDK",
             dependencies: [
                 .product(name: "PrimerSDK", package: "primer-sdk-ios"),
+                .product(name: "StripeCryptoOnramp", package: "stripe-ios-spm"),
             ],
             path: "Sources/MeldSDK",
             // Vendored provider web SDKs (ESM-only upstream), each bundled to a self-contained IIFE
