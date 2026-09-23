@@ -3,6 +3,24 @@ import XCTest
 @testable import MeldSDK
 
 final class StripeNativeContractTests: XCTestCase {
+    func testRegistrationActionRequiresNoSdkHandlesOrCustomerData() throws {
+        let value: [String: Any] = ["version": 1, "status": "NOT_STARTED", "nextStep": "SDK_REGISTER_CUSTOMER"]
+        XCTAssertTrue(try StripeActionResponse(value).requiresRegistration())
+        for extra: [String: Any] in [
+            ["status": "READY"],
+            ["sdk": [:]],
+            ["sdk": ["authorizationHandle": "lai_synthetic"]],
+            ["sdk": ["clientSecret": "synthetic-secret"]],
+            ["sdk": ["sessionHandle": "cos_synthetic"]],
+            ["sdk": ["authenticationState": "BOOTSTRAP"]],
+            ["sdk": ["expiresAt": "2030-01-01T00:00:00Z"]],
+            ["customer": ["missingFields": []]]
+        ] {
+            XCTAssertThrowsError(try StripeActionResponse(value.merging(extra) { _, new in new }).requiresRegistration())
+        }
+        XCTAssertThrowsError(try StripeActionResponse(value).authorizationIntent())
+    }
+
     func testValidContractUsesDeclaredProtocolAndServerBoundConfiguration() throws {
         let value = try StripeNativeOrder(order(), environment: .sandbox)
         XCTAssertEqual(value.walletNetwork, "base")
@@ -12,8 +30,25 @@ final class StripeNativeContractTests: XCTestCase {
         XCTAssertEqual(value.actions.operations["READ_SUBMISSION"], false)
         XCTAssertEqual(value.description, "StripeNativeOrder[REDACTED]")
         XCTAssertFalse(value.description.contains("wallet-synthetic"))
-        // The bridge is not enabled until forms, restoration and orchestration are implemented.
-        XCTAssertEqual(Meld.capabilities(for: try order()).surface, "unsupported")
+        XCTAssertEqual(Meld.capabilities(for: try order()).surface, "native-sdk")
+    }
+
+    func testRegistrationBootstrapNeedsNoInventedProviderIntent() throws {
+        let registration = try order { root in
+            var details = root["paymentMethodResponseDetails"] as! [String: Any]
+            details["sdkFlow"] = "REGISTER"
+            details.removeValue(forKey: "providerIntentId")
+            root["paymentMethodResponseDetails"] = details
+        }
+        let value = try StripeNativeOrder(registration, environment: .sandbox)
+        XCTAssertEqual(value.flow, "REGISTER")
+        XCTAssertNil(value.intent)
+        XCTAssertEqual(Meld.capabilities(for: registration).surface, "native-sdk")
+        try rejected { root in
+            var details = root["paymentMethodResponseDetails"] as! [String: Any]
+            details["sdkFlow"] = "REGISTER"
+            root["paymentMethodResponseDetails"] = details
+        }
     }
 
     func testHistoricalAndIncompleteBootstrapsCannotSelectAWorkingNativeFlow() throws {

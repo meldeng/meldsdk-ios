@@ -41,7 +41,7 @@ final class HeadlessPresentationTests: XCTestCase {
     }
 
     func testShippedRegistrationsAreExactlyWhatTheCatalogPublishes() {
-        // network-partner-domain connector presentations, less Stripe's, which this SDK does not implement.
+        // network-partner-domain connector presentations.
         let catalog: Set = [
             MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "MERCURYO_WIDGET"),
             MeldAdapterPresentation("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN"),
@@ -49,6 +49,8 @@ final class HeadlessPresentationTests: XCTestCase {
             MeldAdapterPresentation("APPLE_PAY", "VENDOR_SDK", "BANXA_CHECKOUT"),
             MeldAdapterPresentation("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY"),
             MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET"),
+            MeldAdapterPresentation("APPLE_PAY", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP"),
+            MeldAdapterPresentation("CREDIT_DEBIT_CARD", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP"),
         ]
         XCTAssertEqual(Set(Meld.adapters.flatMap(\.presentations)), catalog)
     }
