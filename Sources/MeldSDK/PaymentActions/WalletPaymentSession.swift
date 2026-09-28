@@ -138,6 +138,8 @@ final class WalletPaymentSession: MeldProviderSession {
             case .failed:
                 fail("PAYMENT_REJECTED", "The payment attempt failed. Review the order before starting another payment.")
             }
+        } catch MeldApplePayError.unavailable {
+            fail(MeldErrorCode.applePayUnavailable, "Apple Pay is not available on this device or for this user.")
         } catch {
             fail("PAYMENT_CONTINUATION_UNAVAILABLE", "The existing order cannot be continued on this device right now.")
         }

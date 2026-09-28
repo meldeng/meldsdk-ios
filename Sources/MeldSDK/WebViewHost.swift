@@ -40,6 +40,8 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     // host the surface is usable before the provider has wired it up, and would cancel any
     // load-timeout the host runs against exactly that failure.
     private let firesReadyOnNavigation: Bool
+    // Called when WebKit kills the page's content process. Nil leaves the blank page in place.
+    private let onContentProcessTerminated: (() -> Void)?
     private weak var webView: WKWebView?
     private var didFireReady = false
 
@@ -50,6 +52,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
          mainFrameHosts: Set<String> = [],
          userScripts: [WKUserScript] = [],
          firesReadyOnNavigation: Bool = true,
+         onContentProcessTerminated: (() -> Void)? = nil,
          interpret: @escaping ([String: Any]) -> [MeldEvent]) {
         self.url = url
         self.orderId = orderId
@@ -59,6 +62,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
         self.mainFrameHosts = mainFrameHosts
         self.userScripts = userScripts
         self.firesReadyOnNavigation = firesReadyOnNavigation
+        self.onContentProcessTerminated = onContentProcessTerminated
         self.interpret = interpret
         // Always trust the loaded page's own origin; the adapter's set widens it to sibling
         // provider origins (widget vs. exchange host, etc.).
@@ -143,6 +147,10 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
                   detail: Self.detail(from: error), recoverable: true)
     }
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        onContentProcessTerminated?()
+    }
+
     private func fireReadyOnce() {
         guard !didFireReady else { return }
         didFireReady = true
@@ -202,16 +210,19 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     /// Refuses unless the page currently loaded is on an allowed main-frame host, so injection can
     /// never reach a page the provider navigated away to. Requires `mainFrameHosts` to be set —
     /// without that pin there is nothing to verify against.
-    func evaluateJavaScript(_ script: String) {
+    ///
+    /// `completion` receives the script's result, or nil when it was refused or threw.
+    func evaluateJavaScript(_ script: String, completion: @escaping (Any?) -> Void) {
         guard !mainFrameHosts.isEmpty,
-              let current = webView?.url,
+              let webView,
+              let current = webView.url,
               current.scheme?.lowercased() == "https",
               isAllowedMainFrameHost(current.host)
         else {
             Self.log.debug("refused to evaluate script: current page is not an allowed host")
-            return
+            return completion(nil)
         }
-        webView?.evaluateJavaScript(script, completionHandler: nil)
+        webView.evaluateJavaScript(script) { result, _ in completion(result) }
     }
 
     // MARK: - Navigation gating (opt-in via `mainFrameHosts`)

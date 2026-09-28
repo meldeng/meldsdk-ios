@@ -63,10 +63,10 @@ guard Meld.capabilities(for: order).surface != "unsupported" else {
 
 let handle = try Meld.mount(order, into: containerView, handlers: MeldEventHandlers(
     onReady:            { _ in hideSpinner() },
-    onPaymentSubmitted: { _ in showProcessing() },  // ⚠ UX hint — settlement is your webhook, not this
-    onStatusChange:     { e in if e.status == .completed { showOrderComplete() } },
-    onCancel:           { _ in showRetryCTA() },
-    onError:            { e in showError(e.message) }
+    onPaymentSubmitted: { _ in showProcessing() },  // terminal; ⚠ settlement is your webhook, not this
+    onStatusChange:     { e in showProgress(e.status) },  // informational only
+    onCancel:           { _ in showRetryCTA() },  // terminal
+    onError:            { e in if !e.recoverable { handleTerminalError(e.code) } }
 ))
 
 // On teardown (navigation away, modal dismiss):
@@ -97,31 +97,72 @@ The preflight API is available from 0.8.0. Older releases do not provide it.
 
 | Event | Fires when | Do |
 |---|---|---|
-| `onReady` | Widget mounted & interactive | Hide spinner |
-| `onPaymentSubmitted` | User finished the provider payment flow — **exactly once per mount** (UX hint only) | Unmount, show "processing" |
-| `onStatusChange` | Order status changed; `status` is `pending` \| `completed` \| `failed` \| `cancelled` | React to status; `completed` = provider "order complete" (still not settlement) |
-| `onCancel` | User dismissed the payment surface | Keep the existing order; inspect its status before offering another payment |
-| `onError` | The flow cannot continue | Show the safe message; `recoverable: false` does not authorize a new order or charge |
+| `onReady` | Surface presented & interactive | Hide spinner |
+| `onPaymentSubmitted` | **Terminal.** The customer submitted payment; settlement arrives by webhook or server polling | Unmount, show "processing" |
+| `onStatusChange` | Informational; `status` is `pending` \| `completed` \| `failed` \| `cancelled` | Update progress UI only |
+| `onCancel` | **Terminal.** Nothing will settle for this order | Unmount; a retry needs a new order |
+| `onError` | **Terminal** when `recoverable: false`; act on `code` (see [Error codes](#error-codes)) | Unmount and follow the code |
 
-`onPaymentSubmitted` fires once and only once, however the provider signals it. Some send a
-"payment finished" message and never a status; some send `completed` and never a finished message;
-some send both, in either order. The SDK collapses that into one callback, so you do not need a
-`settledOnce` guard of your own. A terminal `failed`, `cancelled` or non-recoverable error closes
-it, so a failure is never followed by a submission.
+**Exactly one terminal callback per mount.** From `mount` until you release the handle (with
+`unmount()` or by dropping it), the SDK delivers exactly one of `onPaymentSubmitted`, `onCancel` or
+`onError(recoverable: false)`, and nothing after it: no `onStatusChange` and no `onReady`. The
+handle is then inert; a retry means a new order. Releasing the handle yourself ends the mount with
+no callback.
+
+Providers disagree on how a submission arrives: some send a "payment finished" message and never a
+status, some send `completed` and never a finished message, some send both in either order. The SDK
+collapses that into one `onPaymentSubmitted`, so you do not need a `settledOnce` guard of your own.
+A `failed` or `cancelled` status blocks a later submission, and the provider's `onError` or
+`onCancel` follows it. If a session ends without a terminal callback, the SDK reports
+`onError(PAYMENT_OUTCOME_UNKNOWN)`, or `PAYMENT_REJECTED` after a `failed` status.
+
+`pending` means the provider is processing and promises nothing by itself. `recoverable: true` comes
+only from visible embedded card widgets: the surface stays up and the customer may still pay.
 
 `status` is normalized across providers — code against it, not the raw provider string (which
-is available in `providerStatus` for logging). A terminal `failed` also fires `onError`, and a
-`cancelled` status also fires `onCancel`.
+is available in `providerStatus` for logging).
 
 Every callback receives the id of the order it relates to (shown as `_` above where unused), so
 an app driving several orders at once can tell them apart.
+
+### Error codes
+
+`code` on a terminal `onError` from an Apple Pay or native SDK surface is normalized. Embedded card
+widgets keep their existing codes. The provider's own event and code, when there is one, travel in
+`detail` (for example `banxa_apple_pay_failed:<Primer errorId>`).
+
+| `code` | Can an attempt exist? | Do |
+|---|---|---|
+| `APPLE_PAY_UNAVAILABLE` | No | Offer hosted checkout or another method |
+| `PRESENTATION_FAILED` | No | Return to your CTA; the next tap creates a new order |
+| `PAYMENT_REJECTED` | No (declined) | Offer another payment option |
+| `ORDER_STATE_CHANGED` | No | Create a new order |
+| `VERIFICATION_PENDING` | No | Tell the customer the provider is reviewing their verification |
+| `PAYMENT_OUTCOME_UNKNOWN` | Yes | Track the existing order; never pay it again |
+
+Banxa Apple Pay reports Primer's outcomes as follows. Primer creates the payment after the customer
+authorizes, so a failure once the sheet is requested can follow a payment that exists:
+
+| Primer outcome | Callback |
+|---|---|
+| Checkout completed | `onPaymentSubmitted` |
+| `payment-cancelled`, or the sheet dismissed | `onCancel` |
+| Any failure before the sheet is requested, or neither Primer reporting the sheet shown nor an app deactivation within 8 s of the request | `onError(PRESENTATION_FAILED)` |
+| `unable-to-present-apple-pay`, `apple-pay-presentation-failed`, `apple-pay-device-not-supported`, `apple-pay-no-cards-in-wallet` or `apple-pay-configuration-error` | `onError(PRESENTATION_FAILED)` |
+| `payment-failed` with payment status `FAILED` | `onError(PAYMENT_REJECTED)` |
+| Any other failure after the sheet is requested | `onError(PAYMENT_OUTCOME_UNKNOWN)` |
+
+Wallet recovery codes (`VERIFICATION_WINDOW_EXPIRED`, `WAIT_FOR_PAYMENT`, `INVALID_VERIFICATION`,
+`PAYMENT_CONTINUATION_UNAVAILABLE`, …) are unchanged. After a successful create, treat any code you
+do not know as "an attempt may exist": track the order through your backend and never pay it again.
 
 ## Native Apple Pay
 
 For an Apple Pay order declaring `NATIVE_TOKEN / MELD_WALLET_TOKEN` v1, use the
 **same `Meld.mount`** as the card widget. The order selects the surface. Pass `applePay:` with
-the sheet inputs. Other Apple Pay protocols can require a hosted view or a vendor SDK. `Meld.capabilities(for: order)` reports `surface == "native-applepay"` and
-`embeddable == false`.
+the sheet inputs. `Meld.capabilities(for: order)` reports `surface == "native-applepay"` and
+`embeddable == false`, as it does for Banxa and provider-hosted Apple Pay. `native-applepay` means
+the SDK presents the payment UI and your host needs no visible view.
 
 The order carries the `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`. You supply
 the amount and currency from the quote used to create that order, a display label, and a fallback
@@ -138,10 +179,10 @@ let handle = try Meld.mount(order, applePay: MeldApplePayRequest(
     summaryItemLabel: "Acme — Buy BTC"
 ), handlers: MeldEventHandlers(
     onReady:            { _ in /* sheet presented */ },
-    onPaymentSubmitted: { _ in showProcessing() },  // ⚠ UX hint — settlement is your webhook
-    onStatusChange:     { e in if e.status == .completed { showOrderComplete() } },
-    onCancel:           { _ in /* user dismissed the sheet */ },
-    onError:            { e in showError(e.message) }
+    onPaymentSubmitted: { _ in showProcessing() },  // terminal; ⚠ settlement is your webhook
+    onStatusChange:     { e in showProgress(e.status) },  // informational only
+    onCancel:           { _ in /* user dismissed the sheet; nothing will settle */ },
+    onError:            { e in if !e.recoverable { handleTerminalError(e.code) } }
 ))
 
 // handle.unmount() dismisses the sheet if you need to tear it down early.
@@ -245,27 +286,60 @@ descriptor never selects a legacy adapter. Orders without the descriptor keep th
 path, including stored responses from older servers. Do not create a new order or replace its idempotency
 key to obtain new metadata.
 
-For a provider-hosted surface, the SDK hides the provider's Apple Pay button and clicks it once the
-page reports it is wired, so the native sheet is the only thing the user sees and the host view may
-stay offscreen. This mirrors Coinbase's reference mobile app. If the button never appears, the SDK
-reports a recoverable `apple_pay_button_not_found` error; offer another payment method.
-
 Mercuryo native wallet orders use the generic action transport and durable attempt/verification
 lifecycle described above. Declared `STRIPE_CRYPTO_ONRAMP` orders use the native SDK adapter for
 Apple Pay or card. An unsupported Stripe descriptor is never sent to the native-wallet adapter.
 React Native consumers need a release containing this change and a matching native dependency
 update; an OTA JavaScript update alone cannot change the native resolver.
 
+### Provider-hosted Apple Pay
+
+Mount a `COINBASE_APPLE_PAY` order the same way as the other Apple Pay protocols: `into:` is
+optional and `applePay:` is accepted and ignored. It needs iOS 16 or later. Below that,
+capabilities report `surface == "unsupported"` and `mount` throws `MeldMountError.unsupported`.
+On a device that cannot make Apple Pay payments, `mount` returns a handle, loads nothing, and then
+delivers `onError(APPLE_PAY_UNAVAILABLE)`, as Mercuryo does.
+
+The SDK loads the provider's page in an invisible container over the top view controller and clicks
+the page's Apple Pay button, so the system sheet is the only thing the customer sees. Each attempt
+is a separate click, every 250 ms, up to 20 times. `onReady` fires on the click. `mount` throws
+`MeldMountError.presentationUnavailable` when no visible view controller can anchor the container.
+If you pass a host and it leaves its window before a terminal callback, the surface ends with no
+callback, as if you had released the handle.
+
+Every error from this surface is non-recoverable, and the SDK tears the page down after it. The
+provider's event and code travel in `detail`, for example
+`onramp_api.load_error:ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED`.
+
+| Provider signal | Callback |
+|---|---|
+| `commit_success` or `polling_start` | `onStatusChange(pending)`, then `onPaymentSubmitted` |
+| `cancel` before submission | `onCancel` |
+| the device cannot make Apple Pay payments | `onError(APPLE_PAY_UNAVAILABLE)` after `mount` returns |
+| `ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED` or `_NOT_SETUP` | `onError(APPLE_PAY_UNAVAILABLE)` |
+| `ERROR_CODE_INIT` | `onError(ORDER_STATE_CHANGED)` |
+| `commit_error` | `onError(PAYMENT_REJECTED)` |
+| any other provider error, a page load failure or crash before the click, no `load_success` within 20 s, or no button | `onError(PRESENTATION_FAILED)` |
+| no page event and no app deactivation within 8 s of the click | `onError(PRESENTATION_FAILED)` |
+| `polling_error` before submission, a page load failure or crash after the click, or no outcome after 180 s of active time since the click | `onError(PAYMENT_OUTCOME_UNKNOWN)` |
+
+Time the sheet holds your app inactive does not count toward the 180 s. After
+`onPaymentSubmitted` the provider's page keeps confirming the payment. If you release the handle
+then, the SDK keeps the page running until the provider reports its polling outcome or 60 s pass.
+That outcome is logged, not delivered, so unmounting on `onPaymentSubmitted` is safe.
+
 ### Public calls
 
 - `Meld.configure(environment:)` — `.sandbox`, `.qa` or `.production`; action origins must match it.
 - `Meld.capabilities(for:)` → `{ embeddable, surface, requiresUserGesture }` — decline `unsupported`;
-  `embeddable` tells you whether to supply a visible host view. Native sheets are not embeddable.
+  `embeddable` tells you whether to supply a visible host view. Native sheets are not embeddable, and
+  `native-applepay` means the SDK presents the payment UI itself.
 - `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
   surface and relays its events. Pass `into:` a `UIView` for an embedded widget, or `applePay:` a
-  `MeldApplePayRequest` for an Apple Pay order; `handle.unmount()` tears it down (removes the widget
-  or dismisses the sheet). Retain the handle while the payment UI is in use; releasing it also unmounts
-  the session. See [Native Apple Pay](#native-apple-pay).
+  `MeldApplePayRequest` for a native wallet order (provider-hosted Apple Pay needs neither);
+  `handle.unmount()` tears it down (removes the widget or dismisses the sheet). Retain the handle
+  while the payment UI is in use; releasing it also unmounts the session. See
+  [Native Apple Pay](#native-apple-pay).
 - `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
 - `MeldApplePayRequest` — amount/currency, display label and fallback email; wallet/IP fields
   are required only for historical orders using the legacy endpoint.
@@ -294,12 +368,15 @@ still binds consent and completion to the order's customer. Use the email associ
 The controller reads submission state before opening provider UI, preserves an existing session,
 and stores only the shared device attempt fence and mutation UUID. Transport retries reuse the same
 body and key; each actual checkout callback receives its own pair. A KYC result during checkout
-resumes verification and re-quotes the same session. Pending verification and unresolved payment
-emit `pending`; native SDK completion alone does not emit a completed order. Track that existing
-order through your backend. Unmount dismisses owned UI, suppresses late events and clears SDK state
-after pending work finishes. Synthetic simulator tests do not establish device/provider payment
-acceptance; enrolled Stripe account, trusted app, Apple Pay entitlements and device checks remain
-required before rollout.
+resumes verification and re-quotes the same session. An unresolved payment emits `pending`, then
+`onError(PAYMENT_OUTCOME_UNKNOWN)`; so does pending verification once a payment may have been
+attempted. Pending verification with no payment attempt reports `onError(VERIFICATION_PENDING)`.
+Any other failure reports `PAYMENT_OUTCOME_UNKNOWN` when a payment may have been attempted, and
+`PRESENTATION_FAILED` otherwise. Native SDK completion alone does not emit a completed order. Track
+that existing order through your backend. Unmount dismisses owned UI, suppresses late events and
+clears SDK state after pending work finishes. Synthetic simulator tests do not establish
+device/provider payment acceptance; enrolled Stripe account, trusted app, Apple Pay entitlements and
+device checks remain required before rollout.
 
 Both package managers pin Stripe to **26.11.0**. SwiftPM uses Stripe's official
 [`stripe-ios-spm`](https://github.com/stripe/stripe-ios-spm) repository. The 25.11 package does not expose

@@ -1,4 +1,5 @@
 import PrimerSDK
+import UIKit
 import XCTest
 
 @testable import MeldSDK
@@ -110,5 +111,156 @@ final class BanxaApplePayAdapterTests: XCTestCase {
         ) { error in
             XCTAssertTrue("\(error)".contains("merchantIdentifier"), "\(error)")
         }
+    }
+
+    // MARK: - Terminal codes
+
+    private final class Recorder {
+        private(set) var events: [String] = []
+        private(set) var errors: [MeldError] = []
+        lazy var handlers: MeldEventHandlers = {
+            var handlers = MeldEventHandlers(
+                onReady: { [weak self] _ in self?.events.append("ready") },
+                onPaymentSubmitted: { [weak self] _ in self?.events.append("submitted") },
+                onCancel: { [weak self] _ in self?.events.append("cancel") },
+                onError: { [weak self] in self?.errors.append($0); self?.events.append("error:\($0.code)") }
+            ).gated()
+            let backstop = handlers.sessionEnded
+            handlers.sessionEnded = { [weak self] in self?.events.append("ended"); backstop?($0) }
+            return handlers
+        }()
+    }
+
+    private func settle(_ seconds: TimeInterval = 0.3) {
+        let settled = expectation(description: "settled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { settled.fulfill() }
+        wait(for: [settled], timeout: seconds + 2)
+    }
+
+    func testAFailureBeforeTheSheetIsShownIsAPresentationFailure() {
+        let r = Recorder()
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers)
+
+        session.primerHeadlessUniversalCheckoutDidFail(withError: NSError(domain: "SyntheticPrimer", code: 3), checkoutData: nil)
+
+        XCTAssertEqual(r.events, ["error:PRESENTATION_FAILED", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:SyntheticPrimer #3")
+        XCTAssertEqual(r.errors.first?.recoverable, false)
+    }
+
+    private func failAfterTheSheetIsShown(_ error: Error, checkoutData: PrimerCheckoutData? = nil) -> Recorder {
+        let r = Recorder()
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers)
+        session.paymentMethodShown()
+        session.primerHeadlessUniversalCheckoutDidFail(withError: error, checkoutData: checkoutData)
+        return r
+    }
+
+    func testAPaymentPrimerReportsAsFailedIsARejection() {
+        let r = failAfterTheSheetIsShown(
+            PrimerError.paymentFailed(paymentMethodType: "APPLE_PAY", paymentId: "pay-1", orderId: nil, status: "FAILED"))
+
+        XCTAssertEqual(r.events, ["ready", "error:PAYMENT_REJECTED", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:payment-failed")
+        XCTAssertEqual(r.errors.first?.recoverable, false)
+    }
+
+    func testAFailedPaymentStatusInTheCheckoutDataIsARejection() {
+        let r = failAfterTheSheetIsShown(
+            NSError(domain: "SyntheticPrimer", code: 3, userInfo: ["errorId": "payment-failed"]),
+            checkoutData: PrimerCheckoutData(
+                payment: PrimerCheckoutDataPayment(id: "pay-1", orderId: nil, paymentFailureReason: nil, status: "FAILED")))
+
+        XCTAssertEqual(r.events, ["ready", "error:PAYMENT_REJECTED", "ended"])
+    }
+
+    func testAPaymentPrimerFailedWhilePendingIsAnUnknownOutcome() {
+        let r = failAfterTheSheetIsShown(
+            PrimerError.paymentFailed(paymentMethodType: "APPLE_PAY", paymentId: "pay-1", orderId: nil, status: "PENDING"))
+
+        XCTAssertEqual(r.events, ["ready", "error:PAYMENT_OUTCOME_UNKNOWN", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:payment-failed")
+    }
+
+    func testAnyOtherFailureAfterTheSheetIsShownIsAnUnknownOutcome() {
+        let r = failAfterTheSheetIsShown(
+            PrimerError.failedToCreatePayment(paymentMethodType: "APPLE_PAY", description: "timeout"))
+
+        XCTAssertEqual(r.events, ["ready", "error:PAYMENT_OUTCOME_UNKNOWN", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:failed-to-create-payment")
+        XCTAssertEqual(r.errors.first?.recoverable, false)
+    }
+
+    func testAnErrorWithNoPrimerIdAfterTheSheetIsShownIsAnUnknownOutcome() {
+        let r = failAfterTheSheetIsShown(NSError(domain: "SyntheticPrimer", code: 3))
+
+        XCTAssertEqual(r.events, ["ready", "error:PAYMENT_OUTCOME_UNKNOWN", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:SyntheticPrimer #3")
+    }
+
+    func testASheetPrimerCouldNotPresentIsAPresentationFailure() {
+        let r = failAfterTheSheetIsShown(PrimerError.unableToPresentApplePay())
+
+        XCTAssertEqual(r.events, ["ready", "error:PRESENTATION_FAILED", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:unable-to-present-apple-pay")
+    }
+
+    func testASheetThatNeverAppearsFailsAtThePresentationDeadline() {
+        let r = Recorder()
+        let deadline = PresentationDeadline(interval: 0.05, notifications: NotificationCenter())
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers, deadline: deadline)
+
+        session.paymentMethodShown()
+        settle()
+        session.primerHeadlessUniversalCheckoutUIDidDismissPaymentMethod()
+
+        XCTAssertEqual(r.events, ["ready", "error:PRESENTATION_FAILED", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "presentation_deadline")
+        XCTAssertFalse(deadline.armed)
+    }
+
+    func testTheSheetTakingOverTheAppDisarmsTheDeadline() {
+        let r = Recorder()
+        let notifications = NotificationCenter()
+        let deadline = PresentationDeadline(interval: 0.05, notifications: notifications)
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers, deadline: deadline)
+        session.paymentMethodShown()
+        XCTAssertTrue(deadline.armed)
+
+        notifications.post(name: UIApplication.willResignActiveNotification, object: nil)
+        settle()
+
+        XCTAssertFalse(deadline.armed)
+        XCTAssertEqual(r.events, ["ready"])
+        session.primerHeadlessUniversalCheckoutUIDidDismissPaymentMethod()
+        XCTAssertEqual(r.events, ["ready", "cancel", "ended"])
+    }
+
+    func testPrimerReportingTheSheetShownDisarmsTheDeadline() {
+        let r = Recorder()
+        let deadline = PresentationDeadline(interval: 0.05, notifications: NotificationCenter())
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers, deadline: deadline)
+        session.paymentMethodShown()
+
+        session.primerHeadlessUniversalCheckoutUIDidShowPaymentMethod(for: "APPLE_PAY")
+        settle()
+
+        XCTAssertFalse(deadline.armed)
+        XCTAssertEqual(r.events, ["ready"])
+        session.primerHeadlessUniversalCheckoutDidCompleteCheckoutWithData(PrimerCheckoutData(payment: nil))
+        XCTAssertEqual(r.events, ["ready", "submitted", "ended"])
+    }
+
+    func testUnmountDisarmsTheDeadlineWithoutACallback() {
+        let r = Recorder()
+        let deadline = PresentationDeadline(interval: 0.05, notifications: NotificationCenter())
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers, deadline: deadline)
+        session.paymentMethodShown()
+
+        session.unmount()
+        settle()
+
+        XCTAssertFalse(deadline.armed)
+        XCTAssertEqual(r.events, ["ready"])
     }
 }

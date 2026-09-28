@@ -68,8 +68,8 @@ final class StripePaymentSession: MeldProviderSession {
                 self.lifetime.ifActive { self.emit(outcome) }
             } catch {
                 self.lifetime.ifActive {
-                    self.handlers.onError?(MeldError(orderId: self.orderID, code: "PAYMENT_CONTINUATION_UNAVAILABLE",
-                        message: "This payment could not be continued. Review the existing order before trying again.", recoverable: false))
+                    self.handlers.onError?(Self.failure(error, mayHaveFinancialAttempt: self.flow.mayHaveFinancialAttempt,
+                                                        orderId: self.orderID))
                 }
             }
             await self.stop()
@@ -77,15 +77,48 @@ final class StripePaymentSession: MeldProviderSession {
     }
 
     private func emit(_ outcome: StripeFlowController.Outcome) {
-        switch outcome {
-        case .cancelled: handlers.onCancel?(orderID)
-        case .completed: handlers.onStatusChange?(MeldStatusChange(orderId: orderID, status: .completed, providerStatus: nil, raw: nil))
-        case .submitted:
-            handlers.onStatusChange?(MeldStatusChange(orderId: orderID, status: .pending, providerStatus: nil, raw: nil))
-            if lifetime.active { handlers.onPaymentSubmitted?(orderID) }
-        case .pending, .verificationPending:
-            handlers.onStatusChange?(MeldStatusChange(orderId: orderID, status: .pending, providerStatus: nil, raw: nil))
+        let events = Self.events(for: outcome, mayHaveFinancialAttempt: flow.mayHaveFinancialAttempt, orderId: orderID)
+        for event in events where lifetime.active {
+            switch event {
+            case .ready: handlers.onReady?(orderID)
+            case .paymentSubmitted: handlers.onPaymentSubmitted?(orderID)
+            case let .statusChange(change): handlers.onStatusChange?(change)
+            case .cancel: handlers.onCancel?(orderID)
+            case let .error(error): handlers.onError?(error)
+            }
         }
+    }
+
+    static func events(for outcome: StripeFlowController.Outcome, mayHaveFinancialAttempt: Bool, orderId: String) -> [MeldEvent] {
+        let pending = MeldEvent.statusChange(MeldStatusChange(orderId: orderId, status: .pending, providerStatus: nil, raw: nil))
+        switch outcome {
+        case .cancelled: return [.cancel]
+        case .completed: return [.statusChange(MeldStatusChange(orderId: orderId, status: .completed, providerStatus: nil, raw: nil))]
+        case .submitted: return [pending, .paymentSubmitted]
+        case .verificationPending where !mayHaveFinancialAttempt:
+            return [.error(MeldError(orderId: orderId, code: MeldErrorCode.verificationPending,
+                message: "The provider is reviewing the customer's verification. No payment was attempted.", recoverable: false))]
+        case .pending, .verificationPending:
+            return [pending, .error(MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
+                message: "The payment outcome is not known yet. Track the existing order without paying again.", recoverable: false))]
+        }
+    }
+
+    static func failure(_ error: Error, mayHaveFinancialAttempt: Bool, orderId: String) -> MeldError {
+        let raw = error as NSError
+        let detail: String
+        switch error {
+        case let PaymentActionError.action(code): detail = "action:\(code.rawValue)"
+        case is StripeNativeError, is PaymentActionError: detail = String(describing: error)
+        default: detail = "\(raw.domain) #\(raw.code)"
+        }
+        guard mayHaveFinancialAttempt else {
+            return MeldError(orderId: orderId, code: MeldErrorCode.presentationFailed,
+                             message: "This payment could not be started. No payment was attempted.", detail: detail, recoverable: false)
+        }
+        return MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
+                         message: "This payment could not be continued. Review the existing order before trying again.",
+                         detail: detail, recoverable: false)
     }
 
     private func cancel() {
@@ -104,6 +137,7 @@ final class StripePaymentSession: MeldProviderSession {
         lifetime.close()
         navigation.dismiss(animated: false)
         await flow.close()
+        handlers.sessionEnded?(orderID)
     }
 }
 

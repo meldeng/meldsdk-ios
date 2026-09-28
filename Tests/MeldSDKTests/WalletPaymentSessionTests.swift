@@ -226,6 +226,44 @@ final class WalletPaymentSessionTests: XCTestCase {
         XCTAssertNil(flow.errors.first?.detail)
         XCTAssertFalse(flow.errors.first?.message.contains("synthetic") ?? true)
     }
+
+    func testGatedUnopenedVerificationEndsWithExactlyOneCancel() throws {
+        let flow = try WalletHarness(gated: true)
+        flow.session.start()
+        flow.client.respond(0, WalletFixtures.response("VERIFICATION_REQUIRED"))
+        flow.closeVerification?(false)
+        flow.closeVerification?(false)
+        XCTAssertEqual(flow.cancelled, 1)
+        XCTAssertEqual(flow.statuses.map(\.status), [.pending])
+        XCTAssertTrue(flow.errors.isEmpty)
+        XCTAssertEqual(flow.submitted, 0)
+    }
+
+    func testGatedSubmittedEndsWithExactlyOneSubmission() throws {
+        let flow = try WalletHarness(gated: true)
+        flow.session.start()
+        flow.client.respond(0, WalletFixtures.response("SUBMITTED"))
+        flow.session.unmount()
+        XCTAssertEqual(flow.submitted, 1)
+        XCTAssertEqual(flow.cancelled, 0)
+        XCTAssertTrue(flow.errors.isEmpty)
+    }
+
+    func testApplePayUnavailableBeforeAnyAttemptIsReportedAsSuch() throws {
+        let flow = try WalletHarness(gated: true)
+        flow.sheetError = MeldApplePayError.unavailable
+        flow.session.start()
+        flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+        XCTAssertEqual(flow.errors.map(\.code), ["APPLE_PAY_UNAVAILABLE"])
+        XCTAssertFalse(try XCTUnwrap(flow.errors.first).recoverable)
+        XCTAssertFalse(flow.store.value.submissionStarted)
+        XCTAssertEqual(flow.client.finished, 1)
+        let other = try WalletHarness(gated: true)
+        other.sheetError = MeldApplePayError.invalidOrder("synthetic")
+        other.session.start()
+        other.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+        XCTAssertEqual(other.errors.map(\.code), ["PAYMENT_CONTINUATION_UNAVAILABLE"])
+    }
 }
 
 private final class WalletHarness {
@@ -241,20 +279,23 @@ private final class WalletHarness {
     var errors: [MeldError] = []
     var statuses: [MeldStatusChange] = []
     var now = WalletFixtures.now
+    var sheetError: Error?
     var onStatus: (() -> Void)?
     var submitWallet: ((WalletPayment, @escaping (ApplePayProcessOutcome) -> Void) -> Void)?
     var sheetFinished: (() -> Void)?
     var openVerification: (() -> Bool)?
     var closeVerification: ((Bool) -> Void)?
 
-    init(identity: String = UUID().uuidString, store: MemoryWalletStore = MemoryWalletStore()) throws {
+    init(identity: String = UUID().uuidString, store: MemoryWalletStore = MemoryWalletStore(), gated: Bool = false) throws {
         self.identity = identity
         self.store = store
+        let handlers = MeldEventHandlers(onPaymentSubmitted: { [weak self] _ in self?.submitted += 1 },
+            onStatusChange: { [weak self] in self?.statuses.append($0); self?.onStatus?() },
+            onCancel: { [weak self] _ in self?.cancelled += 1 }, onError: { [weak self] in self?.errors.append($0) })
         session = try WalletPaymentSession(identity: identity, orderID: "test-order", client: client, store: store,
-            handlers: MeldEventHandlers(onPaymentSubmitted: { [weak self] _ in self?.submitted += 1 },
-                onStatusChange: { [weak self] in self?.statuses.append($0); self?.onStatus?() },
-                onCancel: { [weak self] _ in self?.cancelled += 1 }, onError: { [weak self] in self?.errors.append($0) }),
+            handlers: gated ? handlers.gated() : handlers,
             sheetFactory: { [weak self] submit, finished in
+                if let error = self?.sheetError { throw error }
                 self?.sheets += 1
                 self?.submitWallet = submit
                 self?.sheetFinished = finished

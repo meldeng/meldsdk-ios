@@ -7,7 +7,7 @@ import os
 ///
 /// The provider is the merchant of record and presents the sheet on their own already-registered
 /// origin, so there is no `PKPaymentRequest` to build here and no encrypted token for us to submit.
-/// We host their page and relay what it tells us.
+/// We run their page out of sight, open its sheet, and relay what it tells us.
 ///
 /// Loading the link as the WebView's **top-level document** is what makes this work at all: Apple
 /// Pay on the Web refuses to run in a cross-origin iframe, and because the top page is then the
@@ -21,11 +21,28 @@ import os
 struct HostedLinkApplePayAdapter: MeldAdapter {
     let label = "Hosted Apple Pay link (APPLE_PAY / provider-hosted)"
 
-    // requiresUserGesture: with auto-present off, the only thing that opens the sheet is a tap on
-    // the provider's own button INSIDE their frame — Apple requires the gesture in the frame
-    // holding the merchant session. Either way the host must not render its own Apple Pay button
-    // in front of this one: it would be a second button that can never open a sheet.
-    let capabilities = MeldCapabilities(embeddable: true, surface: "embedded", requiresUserGesture: true)
+    /// iOS 15's WebKit hides `ApplePaySession` from a page that runs a user script, and the SDK's
+    /// bridge always installs one.
+    let supportedOS: Bool
+    let unavailableReason: () -> String?
+
+    init(supportedOS: Bool = HostedLinkApplePayAdapter.systemSupported,
+         unavailableReason: @escaping () -> String? = { MeldApplePayAvailability.unavailableReason() }) {
+        self.supportedOS = supportedOS
+        self.unavailableReason = unavailableReason
+    }
+
+    static var systemSupported: Bool {
+        if #available(iOS 16, *) { return true }
+        return false
+    }
+
+    // Decided here rather than at mount, because preflight reads capabilities without an order.
+    var capabilities: MeldCapabilities {
+        supportedOS
+            ? MeldCapabilities(embeddable: false, surface: "native-applepay", requiresUserGesture: true)
+            : MeldCapabilities(embeddable: false, surface: "unsupported", requiresUserGesture: false)
+    }
 
     private static let logger = Logger(subsystem: "io.meld.sdk", category: "HostedLinkApplePayAdapter")
 
@@ -53,8 +70,8 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
     }
 
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
-        guard let host = context.host else {
-            throw MeldMountError.missingHost(label)
+        guard supportedOS else {
+            throw MeldMountError.unsupported("Provider-hosted Apple Pay needs iOS 16 or later.")
         }
         guard Self.hasSupportedLink(order),
               let linkString = Self.paymentLink(in: order), let link = URL(string: linkString) else {
@@ -71,58 +88,40 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         // Only the DEVICE gate, deliberately: which cards are accepted is configured on the
         // provider's own merchant account, so asserting a network list here would refuse a user
         // whose Wallet holds a card that provider does take.
-        if let unavailable = MeldApplePayAvailability.unavailableReason() {
-            throw MeldMountError.unsupported(unavailable)
+        if let unavailable = unavailableReason() {
+            let session = HostedLinkApplePaySession(orderId: order.id, handlers: handlers)
+            session.deviceUnavailable(unavailable)
+            return session
+        }
+        guard Thread.isMainThread, let surface = OffscreenSurfaceHost(host: context.host) else {
+            throw MeldMountError.presentationUnavailable
         }
 
-        var webViewHost: WebViewHost?
-        let hostRef = { webViewHost }
-
-        let created = WebViewHost(
+        let session = HostedLinkApplePaySession(orderId: order.id, handlers: handlers)
+        let page = WebViewHost(
             url: link,
             orderId: order.id,
-            handlers: handlers,
-            nativeMessageHandlers: [providerProtocol.handler, Self.autoPresentChannel],
+            handlers: MeldEventHandlers(onError: { [weak session] in session?.pageFailed($0) }),
+            nativeMessageHandlers: [providerProtocol.handler],
             mainFrameHosts: [providerProtocol.host],
-            // The provider tells us when its button is wired; page load does not. Reporting ready
-            // at navigation would cancel a host's load-timeout before the surface is usable.
             firesReadyOnNavigation: false,
-            interpret: { message in
-                Self.interpret(message, orderId: order.id, host: hostRef())
+            onContentProcessTerminated: { [weak session] in session?.pageTerminated() },
+            interpret: { [weak session] message in
+                session?.receive(message)
+                return []
             })
-        webViewHost = created
-        created.mount(into: host)
-        return created
+        session.start(page: page, surface: surface)
+        return session
     }
 
     // MARK: - Provider protocol
 
-    /// Channel the injected auto-present script reports back on. The provider's own reference
-    /// implementation has no equivalent — its retry loop simply stops. That is fine while their
-    /// page is visible, because the user can still tap the button; with the page hidden it would
-    /// strand them on a blank screen, so exhaustion is reported and surfaced as an error the
-    /// integrator can fall back from.
-    static let autoPresentChannel = "meldAutoPresent"
-    static let autoPresentButtonNotFound = "button-not-found"
-
-    static func interpret(_ message: [String: Any], orderId: String?, host: WebViewHost?) -> [MeldEvent] {
-        guard let handler = message["handler"] as? String else { return [] }
-
-        if handler == autoPresentChannel {
-            guard message["body"] as? String == autoPresentButtonNotFound else { return [] }
-            return [.error(MeldError(
-                orderId: orderId,
-                code: "apple_pay_button_not_found",
-                message: "The provider's page did not present an Apple Pay button.",
-                detail: nil,
-                // Environmental, not a fault in the order — the integrator should offer another
-                // method rather than invite a retry that will hit the same page.
-                recoverable: true))]
-        }
-        guard Self.protocols.contains(where: { $0.handler == handler }) else { return [] }
-
+    /// Maps one message from the provider's page. Every error is terminal; the provider's own event
+    /// and code travel in `detail` as `<event>:<errorCode>`.
+    static func interpret(_ message: [String: Any], orderId: String?) -> [MeldEvent] {
         // The provider posts JSON strings shaped { eventName, data }.
-        guard let body = message["body"] as? String,
+        guard isProviderMessage(message),
+              let body = message["body"] as? String,
               let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let eventName = json["eventName"] as? String
@@ -130,19 +129,16 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
 
         switch eventName {
         case "onramp_api.load_success":
-            // The page is up and its button is wired. Hide it and click it so the sheet is the only
-            // thing the user ever sees.
-            host?.evaluateJavaScript(autoPresentScript)
             return [.ready]
 
         case "onramp_api.commit_success", "onramp_api.polling_start":
             // A UX hint only: the provider has accepted the payment and is working on it, but
             // settlement truth is the Meld webhook, which can land well after this.
-            return [.paymentSubmitted]
+            return [.statusChange(MeldStatusChange(
+                        orderId: orderId, status: .pending, providerStatus: eventName, raw: json)),
+                    .paymentSubmitted]
 
         case "onramp_api.polling_success":
-            // The provider's own terminal success. Still not settlement — surfaced as a status
-            // change so a host can show "done" while the webhook remains the record of truth.
             return [.statusChange(MeldStatusChange(
                 orderId: orderId, status: .completed, providerStatus: eventName, raw: json))]
 
@@ -152,20 +148,13 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         case "onramp_api.load_error", "onramp_api.commit_error", "onramp_api.polling_error",
              "onramp_api.error":
             let data = json["data"] as? [String: Any]
-            // The provider's own error code travels in `detail`. A host cannot tell "start a new
-            // order" from "fall back to hosted checkout" from the event name alone, and collapsing
-            // that distinction would cost a real recovery path — so it is carried, not dropped.
             let providerCode = data?["errorCode"] as? String
             return [.error(MeldError(
                 orderId: orderId,
-                code: eventName,
+                code: errorCode(eventName, providerCode: providerCode),
                 message: data?["errorMessage"] as? String ?? "The provider reported an error.",
-                detail: providerCode,
-                // Only two outcomes are terminal: a polling failure (the order is spent) and an
-                // init failure (the provider will reject the same order the same way). Everything
-                // else — including a declined commit — can be retried on this order, which is what
-                // the app this was ported from offered.
-                recoverable: eventName != "onramp_api.polling_error" && providerCode != "ERROR_CODE_INIT"))]
+                detail: providerCode.map { "\(eventName):\($0)" } ?? eventName,
+                recoverable: false))]
 
         default:
             // The page emits progress events we have no Meld equivalent for. Tolerated, not an error.
@@ -174,25 +163,43 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         }
     }
 
-    /// Hides the provider's Apple Pay button and clicks it once their page has wired it up, which
-    /// is what presents the native sheet. Mirrors the provider's own reference app
-    /// (coinbase/onramp-v2-mobile-demo, `injectPayButtonClick`).
-    ///
-    /// This is the one piece of the SDK coupled to a provider's DOM, and it will break if they
-    /// rename that element — which is why exhaustion is reported rather than silently swallowed.
-    private static let autoPresentScript = """
-        var style = document.createElement('style');
-        style.textContent = 'apple-pay-button { display: none !important; }';
-        document.head.appendChild(style);
-        function tryClick(attempt) {
-          var btn = document.getElementById('api-onramp-apple-pay-button');
-          if (btn) { btn.click(); }
-          else if (attempt < 10) { setTimeout(function () { tryClick(attempt + 1); }, 500); }
-          else {
-            window.webkit.messageHandlers.\(autoPresentChannel).postMessage('\(autoPresentButtonNotFound)');
-          }
+    static func isProviderMessage(_ message: [String: Any]) -> Bool {
+        guard let handler = message["handler"] as? String else { return false }
+        return protocols.contains { $0.handler == handler }
+    }
+
+    private static func errorCode(_ eventName: String, providerCode: String?) -> String {
+        switch (eventName, providerCode) {
+        case (_, "ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED"), (_, "ERROR_CODE_GUEST_APPLE_PAY_NOT_SETUP"):
+            return MeldErrorCode.applePayUnavailable
+        case (_, "ERROR_CODE_INIT"):
+            return MeldErrorCode.orderStateChanged
+        case ("onramp_api.commit_error", _):
+            return MeldErrorCode.paymentRejected
+        case ("onramp_api.polling_error", _):
+            return MeldErrorCode.paymentOutcomeUnknown
+        default:
+            return MeldErrorCode.presentationFailed
         }
-        tryClick(1);
+    }
+
+    /// Clicks the provider's Apple Pay button, which presents the native sheet, and answers
+    /// `'clicked'` or `'missing'`. Mirrors the provider's reference app
+    /// (coinbase/onramp-v2-mobile-demo, `injectPayButtonClick`); the one piece of the SDK coupled
+    /// to a provider's DOM.
+    static let autoPresentScript = """
+        (function () {
+          if (document.head && !document.getElementById('meld-auto-present')) {
+            var style = document.createElement('style');
+            style.id = 'meld-auto-present';
+            style.textContent = 'apple-pay-button { display: none !important; }';
+            document.head.appendChild(style);
+          }
+          var button = document.getElementById('api-onramp-apple-pay-button');
+          if (!button) { return 'missing'; }
+          button.click();
+          return 'clicked';
+        })();
         """
 
     // MARK: - Order reading
@@ -216,5 +223,250 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
     private static func hostMatches(_ rawHost: String?, _ allowed: String) -> Bool {
         guard let host = rawHost?.lowercased() else { return false }
         return host == allowed || host.hasSuffix(".\(allowed)")
+    }
+}
+
+/// The page a hosted session drives. `WebViewHost` in production.
+protocol HostedPage: AnyObject {
+    func mount(into host: UIView)
+    func unmount()
+    func evaluateJavaScript(_ script: String, completion: @escaping (Any?) -> Void)
+}
+
+extension WebViewHost: HostedPage {}
+
+/// One provider-hosted Apple Pay payment: loads the page offscreen, clicks its button once per
+/// attempt, bounds the wait for an outcome, and delivers the terminal callback before tearing down.
+/// A submitted session outlives its handle in `DetachedSurfaces`. Main thread only.
+final class HostedLinkApplePaySession: MeldProviderSession, DetachedSurface {
+    struct Timing {
+        var loadTimeout: TimeInterval = 20
+        var clickInterval: TimeInterval = 0.25
+        var clickAttempts = 20
+        var detachedGrace: TimeInterval = DetachedSurfaces.gracePeriod
+    }
+
+    private enum Phase { case loading, clicking, presented, submitted, ended }
+
+    private static let interruptedLoads: Set = ["\(NSURLErrorDomain) #\(NSURLErrorCancelled)", "WebKitErrorDomain #102"]
+
+    private let orderId: String?
+    private let handlers: MeldEventHandlers
+    private let timing: Timing
+    private let deadline: PresentationDeadline
+    private let ceiling: PresentationCeiling
+    private let surfaces: DetachedSurfaces
+    private var page: HostedPage?
+    private var surface: OffscreenSurfaceHost?
+    private var phase = Phase.loading
+    private var didAutoPresent = false
+    private var detached = false
+    private var clicks = 0
+    private var loadTimeout: DispatchWorkItem?
+    private var nextClick: DispatchWorkItem?
+
+    init(orderId: String?, handlers: MeldEventHandlers, timing: Timing = Timing(),
+         deadline: PresentationDeadline = PresentationDeadline(),
+         ceiling: PresentationCeiling = PresentationCeiling(),
+         surfaces: DetachedSurfaces = .shared) {
+        self.orderId = orderId
+        self.handlers = handlers
+        self.timing = timing
+        self.deadline = deadline
+        self.ceiling = ceiling
+        self.surfaces = surfaces
+    }
+
+    func start(page: HostedPage, surface: OffscreenSurfaceHost) {
+        self.page = page
+        self.surface = surface
+        surface.onHostLeftWindow = { [weak self] in self?.unmount() }
+        page.mount(into: surface.container)
+        loadTimeout = after(timing.loadTimeout) { [weak self] in
+            self?.fail(MeldErrorCode.presentationFailed, "The provider's page did not load.", detail: "load_timeout")
+        }
+    }
+
+    func deviceUnavailable(_ reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.handle(.error(MeldError(orderId: self.orderId, code: MeldErrorCode.applePayUnavailable,
+                                         message: reason, recoverable: false)))
+        }
+    }
+
+    // MARK: - Page input
+
+    func receive(_ message: [String: Any]) {
+        guard phase != .ended else { return }
+        if phase == .presented, HostedLinkApplePayAdapter.isProviderMessage(message) { deadline.disarm() }
+        HostedLinkApplePayAdapter.interpret(message, orderId: orderId).forEach(handle)
+    }
+
+    func pageFailed(_ error: MeldError) {
+        guard !Self.interruptedLoads.contains(error.detail ?? "") else { return }
+        let detail = [error.code, error.detail].compactMap { $0 }.joined(separator: ":")
+        let code = phase == .presented ? MeldErrorCode.paymentOutcomeUnknown : MeldErrorCode.presentationFailed
+        handle(.error(MeldError(orderId: orderId, code: code, message: error.message,
+                                detail: detail, recoverable: false)))
+    }
+
+    func pageTerminated() {
+        switch phase {
+        case .ended:
+            return
+        case .loading, .clicking:
+            fail(MeldErrorCode.presentationFailed, "The provider's page stopped before it presented Apple Pay.",
+                 detail: "web_content_terminated")
+        case .presented, .submitted:
+            settle("web_content_terminated")
+            handlers.sessionEnded?(orderId)
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    func unmount() {
+        switch phase {
+        case .ended:
+            return
+        case .submitted:
+            guard !detached else { return }
+            detached = true
+            surfaces.keep(self, for: timing.detachedGrace)
+        case .loading, .clicking, .presented:
+            tearDown()
+        }
+    }
+
+    func tearDown() {
+        guard phase != .ended else { return }
+        phase = .ended
+        stopTimers()
+        page?.unmount()
+        page = nil
+        surface?.remove()
+        surface = nil
+    }
+
+    private func handle(_ event: MeldEvent) {
+        switch phase {
+        case .ended: return
+        case .submitted: return afterSubmission(event)
+        case .loading, .clicking, .presented: break
+        }
+        switch event {
+        case .ready:
+            autoPresent()
+        case .paymentSubmitted:
+            submit()
+            dispatch(event)
+        case let .statusChange(change) where change.status == .completed:
+            submit()
+            dispatch(event)
+            settle(change.providerStatus ?? change.status.rawValue)
+        case .statusChange:
+            dispatch(event)
+        case .cancel, .error:
+            dispatch(event)
+            tearDown()
+        }
+    }
+
+    private func afterSubmission(_ event: MeldEvent) {
+        if !detached { dispatch(event) }
+        switch event {
+        case let .statusChange(change) where change.status == .completed:
+            settle(change.providerStatus ?? change.status.rawValue)
+        case .cancel:
+            settle("cancel")
+        case let .error(error):
+            settle(error.detail ?? error.code)
+        case .ready, .paymentSubmitted, .statusChange:
+            break
+        }
+    }
+
+    private func submit() {
+        phase = .submitted
+        stopTimers()
+    }
+
+    private func settle(_ outcome: String) {
+        if detached { surfaces.release(self, outcome: outcome) }
+        tearDown()
+    }
+
+    // MARK: - Auto-present
+
+    private func autoPresent() {
+        guard !didAutoPresent else { return }
+        didAutoPresent = true
+        loadTimeout?.cancel()
+        phase = .clicking
+        click()
+    }
+
+    private func click() {
+        guard phase == .clicking, let page else { return }
+        clicks += 1
+        page.evaluateJavaScript(HostedLinkApplePayAdapter.autoPresentScript) { [weak self] result in
+            self?.clicked(result as? String == "clicked")
+        }
+    }
+
+    private func clicked(_ clicked: Bool) {
+        guard phase == .clicking else { return }
+        if clicked { return presented() }
+        guard clicks < timing.clickAttempts else {
+            return fail(MeldErrorCode.presentationFailed, "The provider's page did not present an Apple Pay button.",
+                        detail: "apple_pay_button_not_found")
+        }
+        nextClick = after(timing.clickInterval) { [weak self] in self?.click() }
+    }
+
+    private func presented() {
+        phase = .presented
+        deadline.arm { [weak self] in
+            self?.fail(MeldErrorCode.presentationFailed, "The Apple Pay sheet did not appear.",
+                       detail: "presentation_deadline")
+        }
+        ceiling.arm { [weak self] in
+            self?.fail(MeldErrorCode.paymentOutcomeUnknown,
+                       "The provider did not report an outcome. Track the existing order without paying again.",
+                       detail: "presentation_ceiling")
+        }
+        handlers.onReady?(orderId)
+    }
+
+    // MARK: - Helpers
+
+    private func fail(_ code: String, _ message: String, detail: String) {
+        handle(.error(MeldError(orderId: orderId, code: code, message: message, detail: detail, recoverable: false)))
+    }
+
+    private func stopTimers() {
+        loadTimeout?.cancel()
+        loadTimeout = nil
+        nextClick?.cancel()
+        nextClick = nil
+        deadline.disarm()
+        ceiling.disarm()
+    }
+
+    private func after(_ interval: TimeInterval, _ work: @escaping () -> Void) -> DispatchWorkItem {
+        let item = DispatchWorkItem(block: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: item)
+        return item
+    }
+
+    private func dispatch(_ event: MeldEvent) {
+        switch event {
+        case .ready: handlers.onReady?(orderId)
+        case .paymentSubmitted: handlers.onPaymentSubmitted?(orderId)
+        case let .statusChange(change): handlers.onStatusChange?(change)
+        case .cancel: handlers.onCancel?(orderId)
+        case let .error(error): handlers.onError?(error)
+        }
     }
 }

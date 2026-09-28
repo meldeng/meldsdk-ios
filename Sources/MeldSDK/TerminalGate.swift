@@ -1,73 +1,109 @@
 import Foundation
+import os
 
 extension MeldEventHandlers {
 
-    /// Collapses a provider's "the customer is done paying" moment into exactly one
-    /// `onPaymentSubmitted` per mount.
+    /// Delivers exactly one terminal callback per mount — `onPaymentSubmitted`, `onCancel` or a
+    /// non-recoverable `onError` — and drops every callback after it.
     ///
-    /// Providers disagree on how that moment arrives. Uphold's authorize widget sends only
-    /// `complete` and never a status. Hosted-link Apple Pay sends `commit_success` *and*
-    /// `polling_start` — both meaning submitted — then `polling_success` as a `completed` status
-    /// later. Mercuryo's card widget sends "payment finished" and a `paid` status as two unrelated
-    /// messages with no ordering between them. Left alone, that asymmetry lands on the integrator,
-    /// who has to dedupe terminal handling or watch it run twice; every one of them ends up writing
-    /// the same guard.
-    ///
-    /// A terminal failed/cancelled status, a cancel, or a non-recoverable error closes the gate
-    /// without firing, so a failure is never followed by a submission. A *recoverable* error does
-    /// not: the surface is still alive and the customer may yet pay.
+    /// Providers disagree on how "the customer is done paying" arrives: a finished message, a
+    /// `completed` status, or both in either order. All of them collapse into one
+    /// `onPaymentSubmitted`, which a `failed` or `cancelled` status blocks. `onStatusChange` lands
+    /// before the callback synthesized from it.
     ///
     /// Applied by `Meld.mount` to the caller's handlers, so it covers every adapter — including the
     /// ones that invoke a handler directly rather than going through a host's event dispatch.
-    ///
-    /// `onStatusChange` is passed straight through, and lands before the callback synthesized from
-    /// it.
-    func gated() -> MeldEventHandlers {
+    func gated(by gate: TerminalGate = TerminalGate()) -> MeldEventHandlers {
         let source = self
-        let gate = TerminalGate()
+        let onError: (MeldError) -> Void = { error in
+            guard error.recoverable ? gate.admits("onError") : gate.terminal("onError") else { return }
+            source.onError?(error)
+        }
 
-        return MeldEventHandlers(
-            onReady: source.onReady,
+        var handlers = MeldEventHandlers(
+            onReady: { orderId in
+                if gate.admits("onReady") { source.onReady?(orderId) }
+            },
             onPaymentSubmitted: { orderId in
-                if gate.open() { source.onPaymentSubmitted?(orderId) }
+                if gate.submission() { source.onPaymentSubmitted?(orderId) }
             },
             onStatusChange: { change in
+                guard gate.admits("onStatusChange") else { return }
                 source.onStatusChange?(change)
-                switch change.status {
-                case .completed:
-                    if gate.open() { source.onPaymentSubmitted?(change.orderId) }
-                case .failed, .cancelled:
-                    gate.close()
-                case .pending:
-                    break
-                }
+                gate.observe(change.status)
+                if change.status == .completed, gate.submission() { source.onPaymentSubmitted?(change.orderId) }
             },
             onCancel: { orderId in
-                gate.close()
-                source.onCancel?(orderId)
+                if gate.terminal("onCancel") { source.onCancel?(orderId) }
             },
-            onError: { error in
-                if !error.recoverable { gate.close() }
-                source.onError?(error)
-            }
+            onError: onError
         )
+        handlers.sessionEnded = { orderId in
+            if let error = gate.unannouncedEnd(orderId: orderId) { onError(error) }
+        }
+        return handlers
     }
 }
 
-/// Reference box for the gate's one bit of state, so every closure in `gated()` shares it.
+/// State shared by every closure in `gated()` and by the handle that owns the mount.
 /// Confined to the main thread, like the handler callbacks themselves.
 final class TerminalGate {
-    private var closed = false
+    private static let logger = Logger(subsystem: "io.meld.sdk", category: "TerminalGate")
 
-    /// `true` the first time the payment reaches a terminal point, `false` every time after.
-    func open() -> Bool {
-        guard !closed else { return false }
-        closed = true
+    private var terminalDelivered = false
+    private var submissionBlocked = false
+    private var failedSeen = false
+    private var released = false
+
+    /// `false` once the terminal callback has been delivered; the dropped callback is logged.
+    func admits(_ callback: String) -> Bool {
+        guard terminalDelivered else { return true }
+        Self.logger.info("dropped \(callback, privacy: .public) after the terminal callback")
+        return false
+    }
+
+    /// `true` only for the first terminal callback of the mount.
+    func terminal(_ callback: String) -> Bool {
+        guard admits(callback) else { return false }
+        terminalDelivered = true
         return true
     }
 
-    /// Close without firing, for a terminal state that is not a submission.
-    func close() {
-        closed = true
+    func submission() -> Bool {
+        guard !submissionBlocked else {
+            Self.logger.info("dropped onPaymentSubmitted after a failed or cancelled status")
+            return false
+        }
+        return terminal("onPaymentSubmitted")
+    }
+
+    func observe(_ status: MeldStatus) {
+        switch status {
+        case .failed:
+            failedSeen = true
+            submissionBlocked = true
+        case .cancelled:
+            submissionBlocked = true
+        case .pending, .completed:
+            break
+        }
+    }
+
+    /// The integrator unmounted or dropped the handle, so a later teardown owes no callback.
+    func release() {
+        released = true
+    }
+
+    /// The terminal error owed by a session that ended without delivering one.
+    func unannouncedEnd(orderId: String?) -> MeldError? {
+        guard !terminalDelivered, !released else { return nil }
+        if failedSeen {
+            return MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
+                             message: "The payment failed. Choose another payment option.",
+                             detail: "session_ended", recoverable: false)
+        }
+        return MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
+                         message: "The payment session ended without an outcome. Track the existing order without paying again.",
+                         detail: "session_ended", recoverable: false)
     }
 }

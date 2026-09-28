@@ -9,7 +9,7 @@ final class PresentationPreflightTests: XCTestCase {
     func testEveryRegisteredPresentationCanBeInspectedWithoutProviderOrOrderCredentials() throws {
         let examples = [
             ("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN", "native-applepay", false),
-            ("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY", "embedded", true),
+            ("APPLE_PAY", "PROVIDER_HOSTED", "COINBASE_APPLE_PAY", "native-applepay", false),
             ("APPLE_PAY", "VENDOR_SDK", "BANXA_CHECKOUT", "native-applepay", false),
             ("APPLE_PAY", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP", "native-sdk", false),
             ("CREDIT_DEBIT_CARD", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP", "native-sdk", false),

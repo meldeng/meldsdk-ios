@@ -11,9 +11,9 @@ import MeldSDK
 /// Full-screen sheet hosting the order's surface, with a status banner + event log underneath.
 ///
 /// Which host is used comes from `Meld.capabilities(for:)`, never from the payment method: an
-/// embeddable order (a card widget, or a provider-hosted Apple Pay page) mounts into a view, and a
-/// non-embeddable one (a native PassKit sheet) presents itself. Both go through `Meld.mount` and
-/// feed the same event log.
+/// embeddable order (a card widget) mounts into a view, and a non-embeddable one (any Apple Pay
+/// sheet, provider-hosted included) presents itself. Both go through `Meld.mount` and feed the
+/// same event log.
 struct WidgetScreen: View {
     let order: MeldOrder
     let providerName: String
@@ -55,12 +55,14 @@ struct WidgetScreen: View {
 func makeDemoHandlers(events: EventLog, finish: @escaping (String) -> Void) -> MeldEventHandlers {
     MeldEventHandlers(
         onReady: { _ in events.record("onReady") },
-        onPaymentSubmitted: { _ in events.record("onPaymentSubmitted (UX hint, not settled)") },
+        onPaymentSubmitted: { _ in
+            events.setStatus(.pending)
+            events.record("onPaymentSubmitted (terminal, not settled)")
+            finish("submitted")
+        },
         onStatusChange: { e in
             events.setStatus(e.status)
             events.record("onStatusChange: \(e.status.rawValue) (\(e.providerStatus ?? "-"))")
-            if e.status == .completed { finish("completed") }
-            if e.status == .failed { finish("failed") }
         },
         onCancel: { _ in
             events.setStatus(.cancelled)
@@ -68,9 +70,10 @@ func makeDemoHandlers(events: EventLog, finish: @escaping (String) -> Void) -> M
             finish("cancelled")
         },
         onError: { e in
-            events.setStatus(.failed)
             events.record("onError [\(e.code)] \(e.message)")
             if let detail = e.detail { events.record("  detail: \(detail)") }
+            guard !e.recoverable else { return }
+            events.setStatus(.failed)
             finish("error")
         }
     )
@@ -79,9 +82,8 @@ func makeDemoHandlers(events: EventLog, finish: @escaping (String) -> Void) -> M
 /// Bridges `Meld.mount` into SwiftUI. This is the part you adapt for your own app.
 struct WidgetContainer: UIViewRepresentable {
     let order: MeldOrder
-    /// Passed through for Apple Pay orders the SDK renders into a view (a provider-hosted page).
-    /// Unused by card orders, and harmless to supply — the adapter reads it only if its surface
-    /// needs it.
+    /// Passed through unchanged. Unused by card orders, and harmless to supply — the adapter reads
+    /// it only if its surface needs it.
     var applePay: MeldApplePayRequest?
     let events: EventLog
     let onClose: () -> Void

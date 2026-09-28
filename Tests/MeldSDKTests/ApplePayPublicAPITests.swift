@@ -77,7 +77,7 @@ final class ApplePayPublicAPITests: XCTestCase {
         // never be built into a PKPaymentRequest by the native adapter.
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"paymentLinkUrl":"https://pay.coinbase.com/x"}}"#)
         XCTAssertEqual(order.presentation, .providerHosted)
-        XCTAssertNotEqual(Meld.capabilities(for: order).surface, "native-applepay")
+        XCTAssertTrue(Meld.adapter(for: order) is HostedLinkApplePayAdapter)
     }
 
     func testUnrecognizedPresentationFailsClosed() throws {

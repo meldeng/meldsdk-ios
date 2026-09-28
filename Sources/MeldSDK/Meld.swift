@@ -116,6 +116,9 @@ public struct MeldEventHandlers {
     public var onStatusChange: ((MeldStatusChange) -> Void)?
     public var onCancel: ((_ orderId: String?) -> Void)?
     public var onError: ((MeldError) -> Void)?
+    /// Set by the terminal gate. An adapter calls it when its session ends by a path that declares
+    /// no terminal callback.
+    var sessionEnded: ((_ orderId: String?) -> Void)?
 
     public init(
         onReady: ((_ orderId: String?) -> Void)? = nil,
@@ -145,6 +148,8 @@ public enum MeldMountError: LocalizedError {
     case missingWidgetURL
     /// This order's surface is an embedded widget, but `mount` was called without a host view.
     case missingHost(String)
+    /// The SDK presents this order's payment UI itself, but no visible view controller could anchor it.
+    case presentationUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -154,6 +159,8 @@ public enum MeldMountError: LocalizedError {
             return "Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load."
         case let .missingHost(label):
             return "\(label) renders into a view — call mount(_:into:handlers:) with a host UIView."
+        case .presentationUnavailable:
+            return "No visible view controller can present this payment. Mount on the main thread from a screen that is on screen."
         }
     }
 }
@@ -168,17 +175,22 @@ public enum MeldMountError: LocalizedError {
 public final class MeldWidgetHandle {
     public let mode: String
     private let session: MeldProviderSession
+    private let gate: TerminalGate
 
-    init(mode: String, session: MeldProviderSession) {
+    init(mode: String, session: MeldProviderSession, gate: TerminalGate) {
         self.mode = mode
         self.session = session
+        self.gate = gate
     }
 
-    public func unmount() { session.unmount() }
+    public func unmount() {
+        gate.release()
+        session.unmount()
+    }
     deinit {
-        let session = session
-        if Thread.isMainThread { session.unmount() }
-        else { DispatchQueue.main.async { session.unmount() } }
+        let session = session, gate = gate
+        if Thread.isMainThread { gate.release(); session.unmount() }
+        else { DispatchQueue.main.async { gate.release(); session.unmount() } }
     }
 }
 
@@ -246,8 +258,9 @@ public enum Meld {
         let context = MeldMountContext(host: host, applePay: applePay)
         // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
         // handler directly — see TerminalGate.
-        let session = try adapter.mount(order: order, context: context, handlers: handlers.gated())
-        return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session)
+        let gate = TerminalGate()
+        let session = try adapter.mount(order: order, context: context, handlers: handlers.gated(by: gate))
+        return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session, gate: gate)
     }
 
     /// Capabilities and mount share authoritative protocol dispatch and legacy replay compatibility.

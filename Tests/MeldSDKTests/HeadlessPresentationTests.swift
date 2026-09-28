@@ -69,7 +69,8 @@ final class HeadlessPresentationTests: XCTestCase {
         for link in ["https://pay.coinbase.com/buy/test", "https://pay-sandbox.coinbase.com/buy/test"] {
             let order = try order(presentation: presentation, details: ["paymentLinkUrl": link])
             XCTAssertTrue(Meld.adapter(for: order) is HostedLinkApplePayAdapter)
-            XCTAssertTrue(Meld.capabilities(for: order).embeddable)
+            XCTAssertFalse(Meld.capabilities(for: order).embeddable)
+            XCTAssertEqual(Meld.capabilities(for: order).surface, "native-applepay")
             XCTAssertTrue(Meld.capabilities(for: order).requiresUserGesture)
         }
         for link in ["http://pay.coinbase.com/test", "https://coinbase.com.attacker.test/x",
