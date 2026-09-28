@@ -44,6 +44,14 @@ struct BanxaApplePayAdapter: MeldAdapter {
     /// against a contract change rather than a bug today. It is worth one clause: the failure it
     /// prevents is a token crossing providers, and the cost of being wrong in the other direction is
     /// a Banxa order failing in Banxa's own adapter, with Banxa's own message.
+    let presentations = [MeldAdapterPresentation("APPLE_PAY", "VENDOR_SDK", "BANXA_CHECKOUT")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        let details = order.paymentMethodResponseDetails
+        return order.hasCompatibleLegacyPresentation("VENDOR_SDK")
+            && ((details?["sessionToken"] as? String) ?? (details?["sdkSessionToken"] as? String))?.isEmpty == false
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.serviceProvider == "BANXA"
             && order.paymentMethodType == "APPLE_PAY"
@@ -101,15 +109,18 @@ struct BanxaApplePayAdapter: MeldAdapter {
 final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
     private let orderId: String?
     private let handlers: MeldEventHandlers
+    private let deadline: PresentationDeadline
     private var selfReference: BanxaPrimerApplePaySession?
     private var finished = false
+    private var presented = false
     private var manager: PrimerHeadlessUniversalCheckout.NativeUIManager?
 
     private static let logger = Logger(subsystem: "io.meld.sdk", category: "BanxaApplePay")
 
-    init(orderId: String?, handlers: MeldEventHandlers) {
+    init(orderId: String?, handlers: MeldEventHandlers, deadline: PresentationDeadline = PresentationDeadline()) {
         self.orderId = orderId
         self.handlers = handlers
+        self.deadline = deadline
         super.init()
     }
 
@@ -150,11 +161,18 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
                 let manager = try PrimerHeadlessUniversalCheckout.NativeUIManager(paymentMethodType: "APPLE_PAY")
                 self.manager = manager
                 try manager.showPaymentMethod(intent: .checkout)
-                self.handlers.onReady?(self.orderId)
+                self.paymentMethodShown()
             } catch {
                 self.fail(error)
             }
         }
+    }
+
+    func paymentMethodShown() {
+        guard !finished else { return }
+        presented = true
+        deadline.arm { [weak self] in self?.presentationExpired() }
+        handlers.onReady?(orderId)
     }
 
     /// The host tore the surface down: stop relaying, and reset Primer so the next checkout does not
@@ -168,27 +186,64 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
         guard !finished else { return }
         finished = true
         manager = nil
+        deadline.disarm()
         // Thread-safe: Primer serialises this behind its own barrier queue.
         PrimerHeadlessUniversalCheckout.current.cleanUp()
     }
 
-    fileprivate func fail(_ error: Error) {
+    fileprivate func fail(_ error: Error, checkoutData: PrimerCheckoutData? = nil) {
         guard !finished else { return releaseRetain() }
+        let raw = error as NSError
         handlers.onError?(
             MeldError(
                 orderId: orderId,
-                code: "banxa_apple_pay_failed",
+                code: Self.code(for: error, checkoutData: checkoutData, presented: presented),
                 message: error.localizedDescription,
-                detail: nil,
+                detail: "banxa_apple_pay_failed:\(Self.errorId(error) ?? "\(raw.domain) #\(raw.code)")",
                 // A new order is needed: the client token is bound to one checkout session.
                 recoverable: false))
+        release()
+    }
+
+    private static func code(for error: Error, checkoutData: PrimerCheckoutData?, presented: Bool) -> String {
+        let id = errorId(error)
+        if !presented || id.map(sheetNotShownErrorIds.contains) == true {
+            return MeldErrorCode.presentationFailed
+        }
+        if id == "payment-failed", (checkoutData?.payment?.status ?? failedPaymentStatus(error)) == "FAILED" {
+            return MeldErrorCode.paymentRejected
+        }
+        return MeldErrorCode.paymentOutcomeUnknown
+    }
+
+    private static let sheetNotShownErrorIds: Set<String> = [
+        "unable-to-present-apple-pay",
+        "apple-pay-presentation-failed",
+        "apple-pay-device-not-supported",
+        "apple-pay-no-cards-in-wallet",
+        "apple-pay-configuration-error",
+    ]
+
+    private static func failedPaymentStatus(_ error: Error) -> String? {
+        guard case let .paymentFailed(_, _, _, status, _) = error as? PrimerError else { return nil }
+        return status
+    }
+
+    private func presentationExpired() {
+        guard !finished else { return }
+        handlers.onError?(MeldError(orderId: orderId, code: MeldErrorCode.presentationFailed,
+                                    message: "The Apple Pay sheet did not appear.", detail: "presentation_deadline",
+                                    recoverable: false))
+        PrimerHeadlessUniversalCheckout.current.cleanUp()
         release()
     }
 
     private func release() {
         finished = true
         manager = nil
+        deadline.disarm()
         selfReference = nil
+        handlers.sessionEnded?(orderId)
     }
 
     /// A terminal callback that arrived after `unmount`: nothing left to report, but the retain
@@ -224,7 +279,7 @@ extension BanxaPrimerApplePaySession: PrimerHeadlessUniversalCheckoutDelegate {
             handlers.onCancel?(orderId)
             return release()
         }
-        fail(err)
+        fail(err, checkoutData: checkoutData)
     }
 
     /// Matched on `errorId` rather than by casting to `PrimerError`, so a Primer version that rewraps
@@ -232,14 +287,21 @@ extension BanxaPrimerApplePaySession: PrimerHeadlessUniversalCheckoutDelegate {
     /// direction is a genuine failure reported as a cancel; the cost in the other is every cancelled
     /// checkout telling the host to start a new order.
     private func isCancellation(_ error: Error) -> Bool {
-        if let primerError = error as? PrimerErrorProtocol {
-            return primerError.errorId == "payment-cancelled"
-        }
-        return (error as NSError).userInfo["errorId"] as? String == "payment-cancelled"
+        Self.errorId(error) == "payment-cancelled"
+    }
+
+    fileprivate static func errorId(_ error: Error) -> String? {
+        (error as? PrimerErrorProtocol)?.errorId ?? (error as NSError).userInfo["errorId"] as? String
     }
 }
 
 extension BanxaPrimerApplePaySession: PrimerHeadlessUniversalCheckoutUIDelegate {
+    /// PassKit presented the sheet, so the customer can now authorize a payment.
+    func primerHeadlessUniversalCheckoutUIDidShowPaymentMethod(for paymentMethodType: String) {
+        guard !finished else { return }
+        deadline.disarm()
+    }
+
     /// The user dismissed the sheet. Cancel, not error — nothing failed.
     func primerHeadlessUniversalCheckoutUIDidDismissPaymentMethod() {
         guard !finished else { return releaseRetain() }

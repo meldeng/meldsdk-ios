@@ -1,18 +1,8 @@
 import Foundation
 
-/// How a payment surface is put on screen. This is the SDK's only dispatch key — adapters select on
-/// it and never on a provider's identity, so adding a provider to a shape that already has an
-/// adapter is a backend config change and nothing here.
-///
-/// The three shapes are a property of what the *provider* exposes, not of what we build:
-///
-/// - ``nativeToken`` — the provider accepts an encrypted wallet token on a server-to-server
-///   endpoint, so the sheet can be presented by us through PassKit. No provider surface anywhere.
-/// - ``vendorSdk`` — the provider's own SDK captures the token inside their PCI environment. Still a
-///   native sheet, but a third-party binary presents it.
-/// - ``providerHosted`` — the provider is the merchant of record and renders the sheet on their own
-///   registered origin. We host their surface; we never see a token. Today that means a launchable
-///   payment link; a widget-session variant is not supported and must not be inferred.
+/// Legacy presentation hints used only when an order has no top-level `headlessPresentation`.
+/// Kept for stored responses from older servers; declared protocol dispatch lives in
+/// `MeldAdapterRegistry` and never falls back to these fingerprints.
 enum MeldPresentation: Equatable {
     case nativeToken
     case vendorSdk
@@ -34,7 +24,7 @@ enum MeldPresentation: Equatable {
 }
 
 extension MeldOrder {
-    /// The order's presentation shape.
+    /// The order's legacy presentation hint.
     ///
     /// Prefers the server's `presentation` field. Until that field ships, falls back to the field
     /// fingerprint of today's response — which is why this exists at all: the live shapes are

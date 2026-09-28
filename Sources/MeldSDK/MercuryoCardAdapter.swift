@@ -15,6 +15,14 @@ struct MercuryoCardAdapter: MeldAdapter {
 
     // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order that a
     // provider-specific card adapter registered ahead of it has not claimed.
+    let presentations = [MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "MERCURYO_WIDGET")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        order.paymentMethodResponseDetails?.renderMode == "IFRAME"
+            && MeldPresentationURL.https(order.paymentMethodResponseDetails?.serviceProviderWidgetUrl,
+                                         hosts: Set(Self.hostsByEnvironment.values.flatMap { $0 }))
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.paymentMethodType == "CREDIT_DEBIT_CARD"
             && order.paymentMethodResponseDetails?.renderMode == "IFRAME"

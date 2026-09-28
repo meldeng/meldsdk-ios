@@ -44,9 +44,13 @@ protocol MeldAdapter {
     /// What this adapter can do with a matching order.
     var capabilities: MeldCapabilities { get }
 
-    /// Whether this adapter handles the order. Adapters select on the payment method and the
-    /// order's ``MeldPresentation`` — never on a provider's identity or widget host, so a new
-    /// provider on an existing shape needs no change here.
+    /// Versioned server declarations implemented by this adapter, independent of provider identity.
+    var presentations: [MeldAdapterPresentation] { get }
+
+    /// Validate the declared protocol's required payload and transport before reporting capabilities.
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool
+
+    /// Compatibility matcher used only when top-level presentation metadata is absent.
     func matches(_ order: MeldOrder) -> Bool
 
     /// Render the order's surface, wiring its lifecycle to `handlers`, and return a session to tear

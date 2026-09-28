@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Keychain access requires an app identity. An unhosted SwiftPM test process cannot exercise it.
+      - name: Generate simulator test host
+        run: |
+          ruby -e 'require "xcodeproj"' || gem install --user-install xcodeproj -v 1.27.0 --no-document
+          ruby scripts/generate-test-host.rb "$RUNNER_TEMP/MeldSDKTestHost"
+
       # Pinning a device name breaks whenever the runner image drops that model, so take whatever
       # iPhone the image actually has. `swift test` is not an option here: the SDK imports UIKit,
       # which does not exist on the macOS target SwiftPM defaults to.
@@ -42,7 +48,8 @@ jobs:
           # the instant xcodebuild returns non-zero.
           set +e
           xcodebuild test \
-            -scheme MeldSDK \
+            -project "$RUNNER_TEMP/MeldSDKTestHost/MeldSDKTests.xcodeproj" \
+            -scheme MeldSDKHostedTests \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
             > xcodebuild.log 2>&1

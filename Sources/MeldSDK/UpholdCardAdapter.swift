@@ -31,6 +31,14 @@ struct UpholdCardAdapter: MeldAdapter {
     // Card is still host-gated: the two-step capture -> authorize flow is Uphold-specific, so this
     // is a genuine provider adapter rather than a shape adapter. Apple Pay is not — see
     // HostedApplePayAdapter, which matches on shape alone.
+    let presentations = [MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET")]
+
+    func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
+        order.paymentMethodResponseDetails?.renderMode == "IFRAME"
+            && MeldPresentationURL.https(order.paymentMethodResponseDetails?.serviceProviderWidgetUrl,
+                                         hosts: Self.allHosts)
+    }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.paymentMethodType == "CREDIT_DEBIT_CARD"
             && order.paymentMethodResponseDetails?.renderMode == "IFRAME"

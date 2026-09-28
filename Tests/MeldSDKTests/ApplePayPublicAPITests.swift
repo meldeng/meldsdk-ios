@@ -1,3 +1,4 @@
+import PassKit
 import XCTest
 @testable import MeldSDK
 
@@ -20,6 +21,34 @@ final class ApplePayPublicAPITests: XCTestCase {
         XCTAssertFalse(caps.embeddable, "Apple Pay isn't mounted into a view")
         XCTAssertEqual(caps.surface, "native-applepay")
         XCTAssertTrue(caps.requiresUserGesture)
+    }
+
+    func testPreflightTakesACardAnyProviderAcceptsWhileMercuryoRequiresItsOwnNetworks() {
+        // canMakePayments(usingNetworks:) is true when Wallet holds a card on any listed network.
+        func wallet(_ cards: Set<PKPaymentNetwork>) -> ([PKPaymentNetwork]) -> Bool { { !cards.isDisjoint(with: $0) } }
+        func reason(_ networks: [PKPaymentNetwork], _ cards: Set<PKPaymentNetwork>) -> String? {
+            MeldApplePayAvailability.unavailableReason(requiring: networks, device: { true }, wallet: wallet(cards))
+        }
+        let any = MeldApplePayAvailability.supportedNetworks, mercuryo = MercuryoApplePayAdapter.supportedNetworks
+        let noCard = "Apple Pay has no usable card in Wallet on this device."
+        XCTAssertEqual(Set(any), [.visa, .masterCard, .amex, .discover, .maestro])
+        XCTAssertEqual(mercuryo, [.visa, .masterCard])
+        XCTAssertEqual(reason(any, []), noCard, "An empty Wallet hides Apple Pay")
+        XCTAssertEqual(reason(mercuryo, []), noCard)
+        for card: PKPaymentNetwork in [.amex, .discover, .maestro] {
+            XCTAssertNil(reason(any, [card]), "\(card.rawValue): Stripe takes it")
+            XCTAssertEqual(reason(mercuryo, [card]), noCard, "\(card.rawValue): Mercuryo does not")
+        }
+        for card: PKPaymentNetwork in [.visa, .masterCard] {
+            XCTAssertNil(reason(any, [card]), card.rawValue)
+            XCTAssertNil(reason(mercuryo, [card]), card.rawValue)
+        }
+        XCTAssertEqual(MeldApplePayAvailability.unavailableReason(requiring: any, device: { false }, wallet: { _ in true }),
+                       "Apple Pay is not supported on this device.")
+        XCTAssertNil(MeldApplePayAvailability.unavailableReason(device: { true }, wallet: wallet([])),
+                     "A provider-hosted surface asserts no networks")
+        XCTAssertEqual(Meld.canPresentApplePay(), PKPaymentAuthorizationController.canMakePayments()
+                       && PKPaymentAuthorizationController.canMakePayments(usingNetworks: any))
     }
 
     func testMountDispatchesByOrderType_cardOrderWithoutHostThrowsMissingHost() throws {
@@ -77,7 +106,7 @@ final class ApplePayPublicAPITests: XCTestCase {
         // never be built into a PKPaymentRequest by the native adapter.
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"paymentLinkUrl":"https://pay.coinbase.com/x"}}"#)
         XCTAssertEqual(order.presentation, .providerHosted)
-        XCTAssertNotEqual(Meld.capabilities(for: order).surface, "native-applepay")
+        XCTAssertTrue(Meld.adapter(for: order) is HostedLinkApplePayAdapter)
     }
 
     func testUnrecognizedPresentationFailsClosed() throws {

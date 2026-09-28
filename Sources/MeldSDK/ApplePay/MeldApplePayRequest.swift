@@ -3,8 +3,8 @@ import Foundation
 /// Inputs the SDK needs to present a native Apple Pay sheet for an Apple Pay order, beyond what
 /// the order itself carries. The order (`ApplePayOrder`) supplies `merchantIdentifier`,
 /// `sessionToken`, and `merchantTransactionId`; everything below is what the app already knows
-/// from the quote it created the order against. The SDK never calls a quote/KYC endpoint — it
-/// only renders the payment surface and drives the order's session-scoped `/process` endpoint.
+/// from the quote it created the order against. The SDK uses the order's action descriptor to
+/// submit wallet data and continue any required hosted verification.
 ///
 /// Provider-determined values — the merchant country, supported card networks, and merchant
 /// capabilities — are NOT here: they're fixed by the provider (e.g. Mercuryo requires `LT`,
@@ -14,12 +14,11 @@ public struct MeldApplePayRequest {
     public let amount: Decimal
     /// Fiat currency, ISO 4217 (e.g. `"EUR"`). Must match the order's source currency.
     public let currencyCode: String
-    /// Destination crypto wallet address the purchase settles to.
+    /// Legacy orders only: destination crypto wallet. New actions use the server-bound address.
     public let walletAddress: String
-    /// End user's public IP. Mercuryo binds the transaction to it (same constraint as order
-    /// creation's `clientIpAddress`).
+    /// Legacy orders only: end user's public IP. New actions use the server-bound client IP.
     public let clientIpAddress: String
-    /// Optional cardholder email forwarded to the provider; defaults provider-side when omitted.
+    /// Fallback email when PassKit omits it. A valid email must be available before submission.
     public let email: String?
     /// Line-item label rendered on the Apple Pay sheet (your merchant/product name).
     public let summaryItemLabel: String
@@ -27,8 +26,8 @@ public struct MeldApplePayRequest {
     public init(
         amount: Decimal,
         currencyCode: String,
-        walletAddress: String,
-        clientIpAddress: String,
+        walletAddress: String = "",
+        clientIpAddress: String = "",
         email: String? = nil,
         summaryItemLabel: String = "Crypto purchase"
     ) {
