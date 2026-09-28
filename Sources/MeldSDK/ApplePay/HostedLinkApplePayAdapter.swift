@@ -256,6 +256,7 @@ final class HostedLinkApplePaySession: MeldProviderSession, DetachedSurface {
     private let deadline: PresentationDeadline
     private let ceiling: PresentationCeiling
     private let surfaces: DetachedSurfaces
+    private let isActive: () -> Bool
     private var page: HostedPage?
     private var surface: OffscreenSurfaceHost?
     private var phase = Phase.loading
@@ -268,13 +269,15 @@ final class HostedLinkApplePaySession: MeldProviderSession, DetachedSurface {
     init(orderId: String?, handlers: MeldEventHandlers, timing: Timing = Timing(),
          deadline: PresentationDeadline = PresentationDeadline(),
          ceiling: PresentationCeiling = PresentationCeiling(),
-         surfaces: DetachedSurfaces = .shared) {
+         surfaces: DetachedSurfaces = .shared,
+         isActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active }) {
         self.orderId = orderId
         self.handlers = handlers
         self.timing = timing
         self.deadline = deadline
         self.ceiling = ceiling
         self.surfaces = surfaces
+        self.isActive = isActive
     }
 
     func start(page: HostedPage, surface: OffscreenSurfaceHost) {
@@ -427,11 +430,14 @@ final class HostedLinkApplePaySession: MeldProviderSession, DetachedSurface {
 
     private func presented() {
         phase = .presented
-        deadline.arm { [weak self] in
-            self?.fail(MeldErrorCode.presentationFailed, "The Apple Pay sheet did not appear.",
-                       detail: "presentation_deadline")
+        let sheetUp = !isActive()
+        if !sheetUp {
+            deadline.arm { [weak self] in
+                self?.fail(MeldErrorCode.presentationFailed, "The Apple Pay sheet did not appear.",
+                           detail: "presentation_deadline")
+            }
         }
-        ceiling.arm { [weak self] in
+        ceiling.arm(paused: sheetUp) { [weak self] in
             self?.fail(MeldErrorCode.paymentOutcomeUnknown,
                        "The provider did not report an outcome. Track the existing order without paying again.",
                        detail: "presentation_ceiling")

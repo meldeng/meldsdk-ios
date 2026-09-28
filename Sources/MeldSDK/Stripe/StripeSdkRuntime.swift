@@ -18,21 +18,24 @@ final class StripeSdkOwnership {
 
 /// Serializes native operations and invalidates callbacks on teardown. A non-cancellable provider
 /// operation may finish after unmount; it retains ownership until it returns and logout completes.
+/// Stripe never resumes some sheets that unmount dismisses, so the wait ends after `abandonAfter`.
 @MainActor
 final class StripeSdkRuntime {
     private let driver: StripeSdkDriving
     private let ownership: StripeSdkOwnership
     private let owner: UUID
+    private let abandonAfter: TimeInterval
     private var active = true
     private var running = false
     private var callbackRunning = false
     private var closing = false
+    private var abandon: Task<Void, Never>?
 
     static func open(factory: @MainActor () async throws -> StripeSdkDriving) async throws -> StripeSdkRuntime {
         try await open(ownership: .shared, factory: factory)
     }
 
-    static func open(ownership: StripeSdkOwnership,
+    static func open(ownership: StripeSdkOwnership, abandonAfter: TimeInterval = 90,
                      factory: @MainActor () async throws -> StripeSdkDriving) async throws -> StripeSdkRuntime {
         let owner = try ownership.acquire()
         let driver: StripeSdkDriving
@@ -42,13 +45,13 @@ final class StripeSdkRuntime {
             ownership.release(owner)
             throw Task.isCancelled ? StripeNativeError.cancelled : StripeNativeError.unavailable
         }
-        let runtime = StripeSdkRuntime(driver: driver, ownership: ownership, owner: owner)
+        let runtime = StripeSdkRuntime(driver: driver, ownership: ownership, owner: owner, abandonAfter: abandonAfter)
         if Task.isCancelled { await runtime.close(); throw StripeNativeError.cancelled }
         return runtime
     }
 
-    private init(driver: StripeSdkDriving, ownership: StripeSdkOwnership, owner: UUID) {
-        self.driver = driver; self.ownership = ownership; self.owner = owner
+    private init(driver: StripeSdkDriving, ownership: StripeSdkOwnership, owner: UUID, abandonAfter: TimeInterval) {
+        self.driver = driver; self.ownership = ownership; self.owner = owner; self.abandonAfter = abandonAfter
     }
 
     func perform<T>(_ operation: @MainActor (StripeSdkDriving) async throws -> T) async throws -> T {
@@ -88,7 +91,23 @@ final class StripeSdkRuntime {
 
     func close() async {
         active = false
-        guard !running, !closing else { return }
+        guard !closing else { return }
+        guard !running else { abandonPendingOperation(); return }
+        abandon?.cancel()
+        await logOut()
+    }
+
+    private func abandonPendingOperation() {
+        guard abandon == nil else { return }
+        let delay = UInt64(max(abandonAfter, 0) * 1_000_000_000)
+        abandon = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard let self, !Task.isCancelled, !self.closing else { return }
+            await self.logOut()
+        }
+    }
+
+    private func logOut() async {
         closing = true
         do { try await driver.logOut(); ownership.release(owner) }
         catch { /* Keep ownership when provider state could not be cleared. */ }

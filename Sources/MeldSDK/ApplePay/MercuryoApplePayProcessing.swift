@@ -132,7 +132,7 @@ enum ApplePayResponseInterpreter {
             events.append(.cancel)
             return ApplePayProcessOutcome(events: events, succeeded: false)
         default:
-            events.insert(.paymentSubmitted, at: 0)
+            events.append(.paymentSubmitted)
             return ApplePayProcessOutcome(events: events, succeeded: true)
         }
     }

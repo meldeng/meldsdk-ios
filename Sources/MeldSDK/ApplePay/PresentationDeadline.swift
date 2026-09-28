@@ -60,7 +60,8 @@ final class PresentationCeiling {
     var armed: Bool { onExpired != nil }
     var paused: Bool { armed && expiry == nil }
 
-    func arm(onExpired: @escaping () -> Void) {
+    /// `paused` starts the count at the next activation, for a sheet that is already up.
+    func arm(paused: Bool = false, onExpired: @escaping () -> Void) {
         disarm()
         self.onExpired = onExpired
         remaining = interval
@@ -70,7 +71,7 @@ final class PresentationCeiling {
             notifications.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil,
                                       queue: nil) { [weak self] _ in self?.resume() },
         ]
-        resume()
+        if !paused { resume() }
     }
 
     func disarm() {

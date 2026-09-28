@@ -4,18 +4,28 @@ import XCTest
 @testable import MeldSDK
 
 final class WalletActionContractTests: XCTestCase {
-    func testStrictResponseVersionStateAndContinuationPairs() throws {
+    func testKnownPairsDecodeAndUnknownOrRepairedValuesDecodeAsAnUnresolvedAttempt() throws {
         for state in ["NOT_STARTED", "SUBMITTED", "IN_PROGRESS", "UNKNOWN", "FAILED", "EXPIRED", "VERIFICATION_REQUIRED"] {
             let json = WalletFixtures.response(state)
-            XCTAssertEqual(try WalletActionResponse(json).state.rawValue, state)
+            let decoded = try WalletActionResponse(json)
+            XCTAssertEqual(decoded.state.rawValue, state)
+            XCTAssertTrue(decoded.recognized)
             var wrongNext = json
             wrongNext["nextStep"] = "CREATE_ANOTHER_PAYMENT"
-            XCTAssertThrowsError(try WalletActionResponse(wrongNext))
+            let repaired = try WalletActionResponse(wrongNext)
+            XCTAssertEqual(repaired.state, .unknown, state)
+            XCTAssertFalse(repaired.recognized, state)
+            XCTAssertNil(repaired.verification, state)
             var wrongVersion = json
             wrongVersion["version"] = true
             XCTAssertThrowsError(try WalletActionResponse(wrongVersion))
+            var missingNext = json
+            missingNext.removeValue(forKey: "nextStep")
+            XCTAssertThrowsError(try WalletActionResponse(missingNext))
         }
-        XCTAssertThrowsError(try WalletActionResponse(WalletFixtures.response("NEW_PROVIDER_STATE")))
+        let added = try WalletActionResponse(WalletFixtures.response("NEW_PROVIDER_STATE"))
+        XCTAssertEqual(added.state, .unknown)
+        XCTAssertFalse(added.recognized)
         var stray = WalletFixtures.response("SUBMITTED")
         stray["verification"] = ["url": "https://example.com"]
         XCTAssertThrowsError(try WalletActionResponse(stray))

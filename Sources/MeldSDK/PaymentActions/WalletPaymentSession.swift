@@ -162,13 +162,15 @@ final class WalletPaymentSession: MeldProviderSession {
         client.send("SUBMIT_WALLET_PAYMENT", fields: fields, key: key) { [weak self] result in
             guard let self, self.active else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
             let decoded = Self.decode(result)
-            if case .failure = decoded {
-                // A lost or malformed response is ambiguous. Recovery is a read, never another submission.
+            if case .success(let response) = decoded, response.recognized {
+                self.completeSubmission(decoded, completion: completion)
+            } else {
+                // A lost, malformed or unrecognized response is ambiguous. Recovery is a read, never another submission.
                 self.client.send("READ_SUBMISSION", fields: [:], key: nil) { [weak self] read in
                     guard let self else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
                     self.completeSubmission(Self.decode(read), completion: completion)
                 }
-            } else { self.completeSubmission(decoded, completion: completion) }
+            }
         }
     }
 
@@ -179,7 +181,7 @@ final class WalletPaymentSession: MeldProviderSession {
         pending = result
         let accepted: Bool
         if case .success(let response) = result {
-            accepted = response.state == .submitted || response.state == .verificationRequired
+            accepted = [.submitted, .verificationRequired, .inProgress, .unknown].contains(response.state)
         } else { accepted = false }
         completion(ApplePayProcessOutcome(events: [], succeeded: accepted))
         if !sheetActive { drain() }

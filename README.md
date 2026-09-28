@@ -69,6 +69,7 @@ let handle = try Meld.mount(order, into: containerView, handlers: MeldEventHandl
     onError:            { e in if !e.recoverable { handleTerminalError(e.code) } }
 ))
 
+// Keep `handle` while the payment UI is up; releasing it unmounts.
 // On teardown (navigation away, modal dismiss):
 handle.unmount()
 ```
@@ -140,6 +141,10 @@ widgets keep their existing codes. The provider's own event and code, when there
 | `VERIFICATION_PENDING` | No | Tell the customer the provider is reviewing their verification |
 | `PAYMENT_OUTCOME_UNKNOWN` | Yes | Track the existing order; never pay it again |
 
+These values are public constants on `MeldErrorCode`, for example `MeldErrorCode.paymentOutcomeUnknown`.
+`error.attemptMayExist` (or `MeldErrorCode.attemptMayExist(error.code)`) is `false` only for the five codes
+above that say no attempt exists, and `true` for every other code, including codes this build does not know.
+
 Banxa Apple Pay reports Primer's outcomes as follows. Primer creates the payment after the customer
 authorizes, so a failure once the sheet is requested can follow a payment that exists:
 
@@ -155,6 +160,8 @@ authorizes, so a failure once the sheet is requested can follow a payment that e
 Wallet recovery codes (`VERIFICATION_WINDOW_EXPIRED`, `WAIT_FOR_PAYMENT`, `INVALID_VERIFICATION`,
 `PAYMENT_CONTINUATION_UNAVAILABLE`, …) are unchanged. After a successful create, treat any code you
 do not know as "an attempt may exist": track the order through your backend and never pay it again.
+`attemptMayExist` applies that rule. It is meant for terminal errors; a `recoverable: true` error such as
+`PROVIDER_LOAD_FAILED` leaves the surface up.
 
 ## Native Apple Pay
 
@@ -166,8 +173,9 @@ the SDK presents the payment UI and your host needs no visible view.
 
 The order carries the `merchantIdentifier`, `sessionToken`, and `merchantTransactionId`. You supply
 the amount and currency from the quote used to create that order, a display label, and a fallback
-email if the wallet does not supply one. The new action contract uses the order's server-bound
-destination wallet and client IP; those values are not sent again by the SDK:
+email. The sheet asks the customer for an email as a contact field, because PassKit never returns one
+on the billing contact; your `email` is used only when PassKit returns none. The new action contract
+uses the order's server-bound destination wallet and client IP; those values are not sent again by the SDK:
 
 ```swift
 import MeldSDK
@@ -197,7 +205,10 @@ The event model is identical to the card flow (see [Events](#events)) — `onRea
 The SDK reads `READ_SUBMISSION` before presenting PassKit. Only `NOT_STARTED / NONE` with no
 local attempt permits a new sheet. It sends the encrypted token and billing details through
 `SUBMIT_WALLET_PAYMENT`, using the order's declared endpoint and scoped bearer. No integrator API
-key reaches the SDK. A lost or malformed submission response triggers a read, never a second submission.
+key reaches the SDK. A lost, malformed or unrecognized submission response triggers a read, never a second
+submission. A status or next step this build does not know counts as unresolved and ends in
+`onError(PAYMENT_OUTCOME_UNKNOWN)`. PassKit reports failure only when the server says the payment failed,
+expired or never started, or gives no readable answer.
 
 The SDK persists only a mutation UUID and submission/verification flags in the app's Keychain.
 Unmounting or recreating the handle does not reset them. Unknown, pending, expired or previously
@@ -337,9 +348,9 @@ That outcome is logged, not delivered, so unmounting on `onPaymentSubmitted` is 
 - `Meld.mount(order, into:, applePay:, handlers:)` → `MeldWidgetHandle` — mounts the order's
   surface and relays its events. Pass `into:` a `UIView` for an embedded widget, or `applePay:` a
   `MeldApplePayRequest` for a native wallet order (provider-hosted Apple Pay needs neither);
-  `handle.unmount()` tears it down (removes the widget or dismisses the sheet). Retain the handle
-  while the payment UI is in use; releasing it also unmounts the session. See
-  [Native Apple Pay](#native-apple-pay).
+  `handle.unmount()` tears it down (removes the widget or dismisses the sheet). Hold the handle
+  while the payment UI is in use; releasing it unmounts the session with no callback, so the result
+  of `mount` is not discardable. See [Native Apple Pay](#native-apple-pay).
 - `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now: payments
   aren't restricted and Wallet holds a card on a network some Apple Pay provider accepts (Visa,
   Mastercard, American Express, Discover or Maestro). An empty Wallet reports `false`. The check has
@@ -380,14 +391,19 @@ pending verification and Cancel once a payment may have been attempted. Before t
 submission reports `onError(PAYMENT_REJECTED)`. Any other failure reports `PAYMENT_OUTCOME_UNKNOWN`
 when a payment may have been attempted, and `PRESENTATION_FAILED` otherwise. Native SDK completion
 alone does not emit a completed order. Track that existing order through your backend. Unmount
-dismisses owned UI, suppresses late events and clears SDK state after pending work finishes.
+dismisses the SDK's sheet and anything Stripe presented over it, suppresses late events and clears SDK
+state after pending work finishes. Stripe never resumes some of its sheets once they are dismissed, so the
+SDK waits at most 90 s for a Stripe call pending at unmount, then logs out anyway. Until then, another
+Stripe mount reports `PRESENTATION_FAILED`.
 Synthetic simulator tests do not establish device/provider payment acceptance; enrolled Stripe
 account, trusted app, Apple Pay entitlements and device checks remain required before rollout.
 
-Both package managers pin Stripe to **26.11.0**. SwiftPM uses Stripe's official
+Both package managers accept Stripe **26.11.x**, patch releases only (`~> 26.11.0` in CocoaPods,
+`.upToNextMinor(from: "26.11.0")` in SwiftPM), because the onramp alpha API changes between minor
+releases. SwiftPM uses Stripe's official
 [`stripe-ios-spm`](https://github.com/stripe/stripe-ios-spm) repository. The 25.11 package does not expose
 the onramp product, even though its CocoaPod does. Par's old direct `@stripe/stripe-react-native:0.64.0`
-dependency requires Stripe 25.11 and cannot coexist with this pod pin; remove that old onramp integration
+dependency requires Stripe 25.11 and cannot coexist with this pod range; remove that old onramp integration
 during migration before adopting this SDK release. Document verification also requires the host app's
 `NSCameraUsageDescription`; the bridge rejects that operation if the usage description is absent.
 

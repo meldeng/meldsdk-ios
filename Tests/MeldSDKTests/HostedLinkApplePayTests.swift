@@ -255,11 +255,14 @@ final class HostedLinkApplePayTests: XCTestCase {
         }
     }
 
+    private final class AppState { var active = true }
+
     private final class Harness {
         let recorder = Recorder()
         let page = FakePage()
         let notifications = NotificationCenter()
         let surfaces = DetachedSurfaces()
+        let app = AppState()
         let surface: OffscreenSurfaceHost
         let session: HostedLinkApplePaySession
 
@@ -270,7 +273,7 @@ final class HostedLinkApplePayTests: XCTestCase {
                 orderId: "o1", handlers: recorder.handlers, timing: timing,
                 deadline: PresentationDeadline(interval: deadline, notifications: notifications),
                 ceiling: PresentationCeiling(interval: ceiling, notifications: notifications),
-                surfaces: surfaces)
+                surfaces: surfaces, isActive: { [app] in app.active })
             page.onUnmount = { [weak recorder] in recorder?.log.append("unmount") }
             session.start(page: page, surface: surface)
         }
@@ -565,6 +568,23 @@ final class HostedLinkApplePayTests: XCTestCase {
         settle(0.5)
 
         XCTAssertEqual(h.log, ["ready"])
+    }
+
+    func testASheetUpBeforeTheClickAnswersStartsNeitherTimerUntilTheAppIsActiveAgain() throws {
+        let h = try Harness(host: root.view, deadline: 0.3, ceiling: 0.3)
+        h.page.answers = ["clicked"]
+        h.app.active = false
+
+        h.send("onramp_api.load_success")
+        settle(0.6)
+        XCTAssertEqual(h.log, ["ready"], "the sheet is up, so it did not fail to appear")
+
+        h.app.active = true
+        h.post(UIApplication.didBecomeActiveNotification)
+        eventually { h.log.count == 3 }
+
+        XCTAssertEqual(h.log, ["ready", "error:PAYMENT_OUTCOME_UNKNOWN", "unmount"])
+        XCTAssertEqual(h.recorder.errors.first?.detail, "presentation_ceiling")
     }
 
     func testTheCeilingPausesWhileTheSheetHoldsTheAppInactive() throws {

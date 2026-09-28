@@ -236,9 +236,9 @@ public enum Meld {
     ///   email fallback. `Meld.mount(order, applePay: request, handlers:)`
     ///
     /// Returns a handle; `handle.unmount()` tears down the surface (removes the widget or dismisses
-    /// the sheet). Call on the main thread. Static payload errors throw; state-dependent validation
-    /// (after an action-state read) reports through `onError`.
-    @discardableResult
+    /// the sheet). Hold the handle for as long as the payment UI is in use: releasing it unmounts the
+    /// session with no callback. Call on the main thread. Static payload errors throw; state-dependent
+    /// validation (after an action-state read) reports through `onError`.
     public static func mount(
         _ order: MeldOrder,
         into host: UIView? = nil,

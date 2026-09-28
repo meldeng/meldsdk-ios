@@ -6,27 +6,37 @@ struct WalletActionResponse {
         case inProgress = "IN_PROGRESS", unknown = "UNKNOWN", expired = "EXPIRED", failed = "FAILED"
     }
     let state: State
+    /// `false` when the status or its step is one this build does not know. The state is then `.unknown`.
+    let recognized: Bool
     let verification: WalletVerification?
 
     init(_ json: [String: Any]) throws {
         guard PaymentActionJSON.integer(json["version"]) == 1,
-              let raw = json["status"] as? String, let state = State(rawValue: raw),
+              let raw = json["status"] as? String,
               let next = json["nextStep"] as? String else { throw PaymentActionError.invalidResponse }
-        let expected: String
-        switch state {
-        case .notStarted, .failed: expected = "NONE"
-        case .submitted, .expired: expected = "WAIT_FOR_PAYMENT"
-        case .unknown, .inProgress: expected = "WAIT_FOR_PROVIDER"
-        case .verificationRequired: expected = "OPEN_HOSTED_VERIFICATION"
+        guard let state = State(rawValue: raw), next == Self.nextStep(state) else {
+            self.state = .unknown
+            recognized = false
+            verification = nil
+            return
         }
-        guard next == expected else { throw PaymentActionError.invalidResponse }
         self.state = state
+        recognized = true
         if state == .verificationRequired {
             guard let raw = json["verification"] as? [String: Any] else { throw PaymentActionError.invalidResponse }
             self.verification = try WalletVerification(raw)
         } else {
             guard json["verification"] == nil || json["verification"] is NSNull else { throw PaymentActionError.invalidResponse }
             self.verification = nil
+        }
+    }
+
+    private static func nextStep(_ state: State) -> String {
+        switch state {
+        case .notStarted, .failed: return "NONE"
+        case .submitted, .expired: return "WAIT_FOR_PAYMENT"
+        case .unknown, .inProgress: return "WAIT_FOR_PROVIDER"
+        case .verificationRequired: return "OPEN_HOSTED_VERIFICATION"
         }
     }
 }

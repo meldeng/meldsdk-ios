@@ -79,10 +79,9 @@ final class StripeFlowController {
                 try await sdk { try await $0.registerWallet(address: self.order.walletAddress, network: self.order.walletNetwork) }
                 forms.showProgress("Choose a payment method")
                 try await sdk { try await $0.collectPayment(request: self.request, from: self.forms.presenter) }
-                try check()
+                let token = try await sdk { try await $0.createPaymentToken() }
                 let key = try store.claimSubmission()
                 financialStarted = true
-                let token = try await sdk { try await $0.createPaymentToken() }
                 let result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key)
                 guard let created = result.session else { throw StripeNativeError.invalidResponse }
                 session = created

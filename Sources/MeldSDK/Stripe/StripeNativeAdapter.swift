@@ -52,9 +52,20 @@ final class StripePaymentSession: MeldProviderSession {
         screen.onCancel = { [weak self] in self?.cancel() }
         // Asynchronous presentation lets mount return its lifecycle handle before any callbacks.
         DispatchQueue.main.async { [weak self, weak presenter] in
-            guard let self, self.lifetime.active, let presenter else { return }
-            presenter.present(self.navigation, animated: true) { [weak self] in self?.start() }
+            guard let self, self.lifetime.active else { return }
+            if let presenter, presenter.presentedViewController == nil, presenter.viewIfLoaded?.window != nil {
+                presenter.present(self.navigation, animated: true) { [weak self] in self?.start() }
+            }
+            if self.navigation.presentingViewController == nil { self.presentationFailed() }
         }
+    }
+
+    private func presentationFailed() {
+        lifetime.ifActive {
+            handlers.onError?(Self.failure(StripeNativeError.unavailable, mayHaveFinancialAttempt: flow.mayHaveFinancialAttempt,
+                                           orderId: orderID))
+        }
+        Task { await stop() }
     }
 
     private func start() {
@@ -142,7 +153,7 @@ final class StripePaymentSession: MeldProviderSession {
 
     private func stop() async {
         lifetime.close()
-        navigation.dismiss(animated: false)
+        (navigation.presentingViewController ?? navigation).dismiss(animated: false)
         await flow.close()
         handlers.sessionEnded?(orderID)
     }

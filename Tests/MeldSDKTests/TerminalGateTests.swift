@@ -242,6 +242,19 @@ final class TerminalGateTests: XCTestCase {
         XCTAssertEqual(session.unmounts, 1)
         XCTAssertTrue(r.events.isEmpty)
     }
+
+    func testOnlyTheCodesThatSayNoAttemptExistsRuleOutAnAttempt() {
+        let codes = [MeldErrorCode.applePayUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.paymentRejected,
+                     MeldErrorCode.orderStateChanged, MeldErrorCode.verificationPending, MeldErrorCode.paymentOutcomeUnknown]
+        XCTAssertEqual(codes, ["APPLE_PAY_UNAVAILABLE", "PRESENTATION_FAILED", "PAYMENT_REJECTED", "ORDER_STATE_CHANGED",
+                               "VERIFICATION_PENDING", "PAYMENT_OUTCOME_UNKNOWN"])
+        XCTAssertEqual(codes.map(MeldErrorCode.attemptMayExist), [false, false, false, false, false, true])
+        for code in ["PAYMENT_STATE_UNAVAILABLE", "WAIT_FOR_PAYMENT", "NAVIGATION_FAILED", "A_CODE_FROM_A_LATER_BUILD"] {
+            XCTAssertTrue(MeldErrorCode.attemptMayExist(code), code)
+        }
+        XCTAssertFalse(MeldError(orderId: "ord_1", code: MeldErrorCode.paymentRejected, message: "x", recoverable: false).attemptMayExist)
+        XCTAssertTrue(MeldError(orderId: "ord_1", code: MeldErrorCode.paymentOutcomeUnknown, message: "x", recoverable: false).attemptMayExist)
+    }
 }
 
 /// An adapter session whose teardown reports through the backstop, as Stripe's and Banxa's do.

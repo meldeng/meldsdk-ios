@@ -37,6 +37,37 @@ final class StripeSdkRuntimeTests: XCTestCase {
         await next.close()
     }
 
+    func testAPendingCallThatNeverReturnsGivesUpTheSdkAfterTheBound() async throws {
+        for logoutFailure in [false, true] {
+            let ownership = StripeSdkOwnership(), driver = FakeStripeSdk()
+            driver.logoutFailure = logoutFailure
+            let runtime = try await StripeSdkRuntime.open(ownership: ownership, abandonAfter: 0.1) { driver }
+            let entered = expectation(description: "lookup started")
+            var resume: CheckedContinuation<Bool, Error>?
+            driver.lookup = { try await withCheckedThrowingContinuation { resume = $0; entered.fulfill() } }
+            let pending = Task { try await runtime.perform { try await $0.hasAccount(email: "synthetic@example.com") } }
+            await fulfillment(of: [entered], timeout: 2)
+            await runtime.close()
+            await runtime.close()
+            XCTAssertEqual(driver.logoutCount, 0)
+            await assertError(.busy) { _ = try await StripeSdkRuntime.open(ownership: ownership) { FakeStripeSdk() } }
+            for _ in 0..<100 {
+                if driver.logoutCount > 0 { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertEqual(driver.logoutCount, 1)
+            if logoutFailure {
+                await assertError(.busy) { _ = try await StripeSdkRuntime.open(ownership: ownership) { FakeStripeSdk() } }
+            } else {
+                let next = try await StripeSdkRuntime.open(ownership: ownership) { FakeStripeSdk() }
+                await next.close()
+            }
+            resume?.resume(returning: true)
+            await assertError(.cancelled) { _ = try await pending.value }
+            XCTAssertEqual(driver.logoutCount, 1)
+        }
+    }
+
     func testCreationFailureIsSanitizedAndDoesNotLeaveAnActiveCoordinator() async throws {
         let ownership = StripeSdkOwnership()
         await assertError(.unavailable) {

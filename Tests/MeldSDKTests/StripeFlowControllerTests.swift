@@ -230,6 +230,35 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testTokenFailureClaimsNothingSoTheOrderCanStillBePaid() async throws {
+        for cancelled in [false, true] {
+            let h = try FlowHarness()
+            h.driver.failToken = cancelled ? StripeNativeError.cancelled : StripeNativeError.unavailable
+            h.driver.onToken = { XCTAssertFalse(h.store.value.submissionStarted, "The fence is claimed after the token exists") }
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()]
+            do {
+                let outcome = try await h.flow.run()
+                XCTAssertTrue(cancelled)
+                XCTAssertEqual(outcome, .cancelled)
+            } catch {
+                XCTAssertFalse(cancelled)
+                XCTAssertEqual(StripePaymentSession.failure(error, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt,
+                                                            orderId: "synthetic-order").code, "PRESENTATION_FAILED")
+            }
+            XCTAssertFalse(h.store.value.submissionStarted)
+            XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
+            XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+            await h.flow.close()
+            let retry = try FlowHarness(store: h.store)
+            retry.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+                                                              FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+            let outcome = try await retry.flow.run()
+            XCTAssertEqual(outcome, .submitted)
+            XCTAssertEqual(retry.client.calls.filter { $0.operation == "CREATE_PAYMENT_SESSION" }.first?.key, h.store.value.submissionKey)
+            await retry.flow.close()
+        }
+    }
+
     func testUnmountDuringNativeWorkSuppressesLaterBackendMutationsAndLogsOut() async throws {
         let h = try FlowHarness()
         h.driver.onHasAccount = { h.lifetime.close() }
@@ -446,6 +475,85 @@ final class StripeFlowControllerTests: XCTestCase {
         }
     }
 
+    func testHostPresentingFirstReportsAPresentationFailureAndEndsTheSession() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let client = FlowClient(), counter = FlowCounter()
+        var events: [String] = []
+        var handlers = MeldEventHandlers(onReady: { _ in events.append("ready") },
+                                         onError: { events.append("error:\($0.code)") }).gated()
+        let backstop = handlers.sessionEnded
+        handlers.sessionEnded = { events.append("ended"); backstop?($0) }
+        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil, handlers: handlers,
+            client: client, store: FlowStore(),
+            factory: { counter.value += 1; return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() } })
+        let other = UIViewController()
+        root.present(other, animated: false)
+        for _ in 0..<100 {
+            if events.contains("ended") { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(events, ["error:PRESENTATION_FAILED", "ended"])
+        XCTAssertTrue(root.presentedViewController === other)
+        XCTAssertTrue(client.calls.isEmpty)
+        XCTAssertEqual(counter.value, 0)
+        root.dismiss(animated: false)
+        session.unmount()
+    }
+
+    func testUnmountDismissesProviderSheetsWithTheProgressSheetAndAlwaysReleasesTheSdk() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        for reportsDismissal in [true, false] {
+            let client = FlowClient(), driver = FlowDriver(), ownership = StripeSdkOwnership()
+            client.responses = [FlowHarness.resume(), FlowHarness.authToken]
+            var pending: CheckedContinuation<Void, Error>?
+            driver.onAuthenticate = {
+                try await withCheckedThrowingContinuation { continuation in
+                    let sheet = FlowProviderSheet()
+                    if reportsDismissal { sheet.onDisappear = { continuation.resume(throwing: StripeNativeError.cancelled) } }
+                    else { pending = continuation }
+                    root.presentedViewController?.present(sheet, animated: false)
+                }
+            }
+            let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
+                handlers: MeldEventHandlers(), client: client, store: FlowStore(),
+                factory: { try await StripeSdkRuntime.open(ownership: ownership, abandonAfter: 0.5) { driver } })
+            for _ in 0..<100 {
+                if root.presentedViewController?.presentedViewController is FlowProviderSheet { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertTrue(root.presentedViewController?.presentedViewController is FlowProviderSheet)
+            session.unmount()
+            for _ in 0..<100 {
+                if root.presentedViewController == nil, driver.logouts == (reportsDismissal ? 1 : 0) { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertNil(root.presentedViewController, "reportsDismissal: \(reportsDismissal)")
+            XCTAssertEqual(driver.logouts, reportsDismissal ? 1 : 0)
+            if pending != nil {
+                do { _ = try await StripeSdkRuntime.open(ownership: ownership) { FlowDriver() }; XCTFail("A pending call keeps the SDK") }
+                catch StripeNativeError.busy { }
+                for _ in 0..<100 {
+                    if driver.logouts == 1 { break }
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+                XCTAssertEqual(driver.logouts, 1, "A call Stripe never resumes still ends in logout")
+            }
+            let next = try await StripeSdkRuntime.open(ownership: ownership) { FlowDriver() }
+            await next.close()
+            pending?.resume(throwing: StripeNativeError.cancelled)
+            try await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertEqual(driver.logouts, 1)
+        }
+    }
+
     func testTeardownWithoutATerminalReportsAnUnknownOutcomeUnlessTheHandleWasReleased() async throws {
         UIView.setAnimationsEnabled(false)
         defer { UIView.setAnimationsEnabled(true) }
@@ -482,10 +590,12 @@ final class StripeFlowControllerTests: XCTestCase {
 
 @MainActor
 private final class FlowHarness {
-    let client = FlowClient(), store = FlowStore(), driver = FlowDriver(), forms = FlowForms()
+    let client = FlowClient(), driver = FlowDriver(), forms = FlowForms()
     let lifetime = StripeFlowLifetime(), factory = FlowCounter()
+    let store: FlowStore
     let flow: StripeFlowController
-    init(applePay: Bool = false, registration: Bool = false) throws {
+    init(applePay: Bool = false, registration: Bool = false, store: FlowStore = FlowStore()) throws {
+        self.store = store
         let order = try Self.order(applePay: applePay, registration: registration)
         let counter = factory, driver = driver
         let request = applePay ? try order.paymentRequest() : nil
@@ -533,6 +643,13 @@ private final class FlowHarness {
 }
 
 private final class FlowCounter { var value = 0 }
+private final class FlowProviderSheet: UIViewController {
+    var onDisappear: (() -> Void)?
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onDisappear?(); onDisappear = nil
+    }
+}
 private final class FlowClient: PaymentActionSending {
     struct Call { let operation: String; let fields: [String: Any]; let key: UUID? }
     var calls: [Call] = []
@@ -581,12 +698,18 @@ private final class FlowDriver: StripeSdkDriving {
     var hasAccountResult = true, failAuthentication = false, updateAddress = false, cancelCollection = false
     var checkoutCallbacks = 1, logouts = 0
     var callbackSession: String?
+    var failToken: StripeNativeError?
     var onHasAccount: (() -> Void)?
+    var onToken: (() -> Void)?
+    var onAuthenticate: (() async throws -> Void)?
     var collectedRequest: PKPaymentRequest?
     func hasAccount(email: String) async throws -> Bool { calls.append("hasAccount"); onHasAccount?(); return hasAccountResult }
     func register(email: String, name: String?, phone: String, country: String) async throws { calls.append("register") }
     func authorize(intent: String, from presenter: UIViewController) async throws -> String { calls.append("authorize"); return "crc_synthetic" }
-    func authenticate(secret: String) async throws { calls.append("authenticate"); if failAuthentication { throw StripeNativeError.authorizationRequired } }
+    func authenticate(secret: String) async throws {
+        calls.append("authenticate"); try await onAuthenticate?()
+        if failAuthentication { throw StripeNativeError.authorizationRequired }
+    }
     func attachIdentity(_ input: StripeIdentityInput) async throws { calls.append("attachIdentity") }
     func verifyIdentity(from presenter: UIViewController) async throws { calls.append("verifyIdentity") }
     func confirmIdentity(address: StripeAddressInput?, from presenter: UIViewController) async throws -> StripeKycConfirmation {
@@ -597,7 +720,11 @@ private final class FlowDriver: StripeSdkDriving {
         collectedRequest = request
         calls.append("collectPayment"); if cancelCollection { throw StripeNativeError.cancelled }
     }
-    func createPaymentToken() async throws -> String { calls.append("createPaymentToken"); return "cpt_synthetic" }
+    func createPaymentToken() async throws -> String {
+        calls.append("createPaymentToken"); onToken?()
+        if let failToken { throw failToken }
+        return "cpt_synthetic"
+    }
     func checkout(session: String, from presenter: UIViewController, secret: @escaping @MainActor (String) async throws -> String) async throws {
         calls.append("checkout")
         for _ in 0..<checkoutCallbacks { _ = try await secret(callbackSession ?? session) }

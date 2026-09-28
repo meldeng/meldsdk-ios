@@ -2,6 +2,24 @@ import Contacts
 import Foundation
 import PassKit
 
+/// The PassKit controller calls the coordinator makes.
+protocol ApplePaySheetControlling: AnyObject {
+    var delegate: PKPaymentAuthorizationControllerDelegate? { get set }
+    func present(completion: ((Bool) -> Void)?)
+    func dismiss(completion: (() -> Void)?)
+}
+
+private final class PassKitSheet: ApplePaySheetControlling {
+    private let controller: PKPaymentAuthorizationController
+    init(_ request: PKPaymentRequest) { controller = PKPaymentAuthorizationController(paymentRequest: request) }
+    var delegate: PKPaymentAuthorizationControllerDelegate? {
+        get { controller.delegate }
+        set { controller.delegate = newValue }
+    }
+    func present(completion: ((Bool) -> Void)?) { controller.present(completion: completion) }
+    func dismiss(completion: (() -> Void)?) { controller.dismiss(completion: completion) }
+}
+
 /// Presents PassKit and collects wallet data. The adapter's processor owns transport and recovery.
 final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDelegate, MeldProviderSession {
     private let orderId: String?
@@ -13,7 +31,8 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
     private let handlers: MeldEventHandlers
     private let process: (WalletPayment, @escaping (ApplePayProcessOutcome) -> Void) -> Void
     private let onFinished: () -> Void
-    private var controller: PKPaymentAuthorizationController?
+    private let makeController: (PKPaymentRequest) -> ApplePaySheetControlling
+    private var controller: ApplePaySheetControlling?
     private var didAuthorize = false
     private var active = true
     private var closing = false
@@ -25,7 +44,8 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
          merchantCountryCode: String, supportedNetworks: [PKPaymentNetwork],
          merchantCapabilities: PKMerchantCapability, handlers: MeldEventHandlers,
          process: @escaping (WalletPayment, @escaping (ApplePayProcessOutcome) -> Void) -> Void,
-         onFinished: @escaping () -> Void) {
+         onFinished: @escaping () -> Void,
+         makeController: @escaping (PKPaymentRequest) -> ApplePaySheetControlling = { PassKitSheet($0) }) {
         self.orderId = orderId
         self.merchantIdentifier = merchantIdentifier
         self.request = request
@@ -35,6 +55,7 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         self.handlers = handlers
         self.process = process
         self.onFinished = onFinished
+        self.makeController = makeController
     }
 
     func present() {
@@ -45,21 +66,19 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         pkRequest.supportedNetworks = supportedNetworks
         pkRequest.countryCode = merchantCountryCode
         pkRequest.currencyCode = request.currencyCode
-        pkRequest.requiredBillingContactFields = [.name, .postalAddress, .emailAddress]
+        pkRequest.requiredBillingContactFields = [.name, .postalAddress]
+        pkRequest.requiredShippingContactFields = [.emailAddress]
         pkRequest.paymentSummaryItems = [PKPaymentSummaryItem(label: request.summaryItemLabel,
                                                              amount: NSDecimalNumber(decimal: request.amount))]
-        let controller = PKPaymentAuthorizationController(paymentRequest: pkRequest)
+        let controller = makeController(pkRequest)
         controller.delegate = self
         self.controller = controller
         selfRetain = self
         controller.present { [weak self] presented in
             DispatchQueue.main.async {
-                guard let self, self.active else { return }
-                if presented { self.handlers.onReady?(self.orderId) }
-                else {
-                    self.emitError(code: "APPLE_PAY_UNAVAILABLE", message: "Apple Pay is not available on this device.")
-                    self.finishSheet()
-                }
+                guard let self else { return }
+                guard presented else { self.presentationFailed(); return }
+                if self.active { self.handlers.onReady?(self.orderId) }
             }
         }
     }
@@ -96,15 +115,15 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
             stateCode: postal?.state, city: postal?.city, zipCode: postal?.postalCode)
         let wallet = WalletPayment(token: payment.token.paymentData.base64EncodedString(),
                                    firstName: firstName, lastName: lastName,
-                                   email: payment.billingContact?.emailAddress?.nonBlank ?? request.email,
+                                   email: payment.shippingContact?.emailAddress?.nonBlank ?? request.email,
                                    billing: billing)
         process(wallet) { [weak self] outcome in
             DispatchQueue.main.async {
                 guard let self, self.active else {
                     completion(PKPaymentAuthorizationResult(status: .failure, errors: nil)); return
                 }
-                for event in outcome.events where self.active { self.dispatch(event) }
                 completion(PKPaymentAuthorizationResult(status: outcome.succeeded ? .success : .failure, errors: nil))
+                for event in outcome.events where self.active { self.dispatch(event) }
                 self.finishSheet()
             }
         }
@@ -117,8 +136,8 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
 
     private func reject(_ code: String, _ message: String,
                         _ completion: (PKPaymentAuthorizationResult) -> Void) {
-        emitError(code: code, message: message)
         completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
+        emitError(code: code, message: message)
         finishSheet()
     }
 
@@ -135,6 +154,12 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
     private func emitError(code: String, message: String) {
         guard active else { return }
         handlers.onError?(MeldError(orderId: orderId, code: code, message: message, recoverable: false))
+    }
+
+    private func presentationFailed() {
+        controller = nil
+        emitError(code: MeldErrorCode.applePayUnavailable, message: "Apple Pay is not available on this device.")
+        if closing { cleanup() } else { finishSheet() }
     }
 
     private func finishSheet() {

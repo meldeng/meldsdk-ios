@@ -59,14 +59,14 @@ final class ApplePayProcessingTests: XCTestCase {
 
     // MARK: - Response interpretation
 
-    func testAcceptedResponseEmitsSubmittedAndPendingStatus() {
+    func testAcceptedResponseEmitsPendingStatusThenSubmitted() {
         let json: [String: Any] = ["data": ["id": "tx1", "status": "new"]]
         let outcome = ApplePayResponseInterpreter.interpret(httpStatus: 200, json: json, orderId: "ord1")
 
         XCTAssertTrue(outcome.succeeded)
         XCTAssertEqual(outcome.events.count, 2)
-        guard case .paymentSubmitted = outcome.events[0] else { return XCTFail("expected paymentSubmitted") }
-        guard case let .statusChange(change) = outcome.events[1] else { return XCTFail("expected statusChange") }
+        guard case let .statusChange(change) = outcome.events[0] else { return XCTFail("expected statusChange") }
+        guard case .paymentSubmitted = outcome.events[1] else { return XCTFail("expected paymentSubmitted") }
         XCTAssertEqual(change.status, .pending)
         XCTAssertNil(change.providerStatus)
         XCTAssertNil(change.raw)
@@ -77,7 +77,7 @@ final class ApplePayProcessingTests: XCTestCase {
         let json: [String: Any] = ["data": ["payment_status": "paid"]]
         let outcome = ApplePayResponseInterpreter.interpret(httpStatus: 200, json: json, orderId: nil)
         XCTAssertTrue(outcome.succeeded)
-        guard case let .statusChange(change) = outcome.events[1] else { return XCTFail("expected statusChange") }
+        guard case let .statusChange(change) = outcome.events[0] else { return XCTFail("expected statusChange") }
         XCTAssertEqual(change.status, .completed)
     }
 

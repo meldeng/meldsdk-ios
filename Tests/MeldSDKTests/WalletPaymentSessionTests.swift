@@ -43,6 +43,64 @@ final class WalletPaymentSessionTests: XCTestCase {
         }
     }
 
+    func testUnrecognizedSubmissionAnswerReadsAndNeverReportsAFailedPayment() throws {
+        let unrecognized: [[String: Any]] = [["version": 1, "status": "NEW_PROVIDER_STATE", "nextStep": "WAIT_FOR_PROVIDER"],
+                                             ["version": 1, "status": "FAILED", "nextStep": "WAIT_FOR_PROVIDER"],
+                                             ["version": 1, "status": "SUBMITTED", "nextStep": "NEW_NEXT_STEP"]]
+        for answer in unrecognized {
+            for read in [answer, WalletFixtures.response("SUBMITTED")] {
+                let flow = try WalletHarness(gated: true)
+                defer { flow.session.unmount() }
+                flow.session.start()
+                flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+                flow.authorize()
+                flow.client.respond(1, answer)
+                XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION", "SUBMIT_WALLET_PAYMENT", "READ_SUBMISSION"])
+                flow.client.respond(2, read)
+                XCTAssertEqual(flow.outcomes, [true])
+                flow.sheetFinished?()
+                let resolved = read["status"] as? String == "SUBMITTED" && read["nextStep"] as? String == "WAIT_FOR_PAYMENT"
+                XCTAssertEqual(flow.errors.map(\.code), resolved ? [] : ["PAYMENT_OUTCOME_UNKNOWN"])
+                XCTAssertEqual(flow.submitted, resolved ? 1 : 0)
+                XCTAssertEqual(flow.statuses.map(\.status), [.pending])
+                XCTAssertEqual(flow.sheets, 1)
+            }
+        }
+    }
+
+    func testUnresolvedSubmissionAnswerCompletesTheSheetAndReportsAnUnknownOutcome() throws {
+        for state in ["IN_PROGRESS", "UNKNOWN"] {
+            let flow = try WalletHarness(gated: true)
+            defer { flow.session.unmount() }
+            flow.session.start()
+            flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+            flow.authorize()
+            flow.client.respond(1, WalletFixtures.response(state))
+            XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION", "SUBMIT_WALLET_PAYMENT"], state)
+            XCTAssertEqual(flow.outcomes, [true], state)
+            flow.sheetFinished?()
+            XCTAssertEqual(flow.errors.map(\.code), ["PAYMENT_OUTCOME_UNKNOWN"], state)
+        }
+        let failed = try WalletHarness(gated: true)
+        defer { failed.session.unmount() }
+        failed.session.start()
+        failed.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+        failed.authorize()
+        failed.client.respond(1, WalletFixtures.response("FAILED"))
+        XCTAssertEqual(failed.outcomes, [false])
+    }
+
+    func testUnrecognizedStateBeforeTheSheetFencesTheOrderAndReportsAnUnknownOutcome() throws {
+        let flow = try WalletHarness(gated: true)
+        defer { flow.session.unmount() }
+        flow.session.start()
+        flow.client.respond(0, ["version": 1, "status": "NOT_STARTED", "nextStep": "NEW_NEXT_STEP"])
+        XCTAssertEqual(flow.sheets, 0)
+        XCTAssertTrue(flow.store.value.submissionStarted)
+        XCTAssertEqual(flow.errors.map(\.code), ["PAYMENT_OUTCOME_UNKNOWN"])
+        XCTAssertTrue(try XCTUnwrap(flow.errors.first).attemptMayExist)
+    }
+
     func testRemountWithDurableAttemptNeverPresentsAnotherWallet() throws {
         let store = MemoryWalletStore()
         let first = try WalletHarness(store: store)
