@@ -95,6 +95,13 @@ final class StripePaymentSession: MeldProviderSession {
         case .cancelled: return [.cancel]
         case .completed: return [.statusChange(MeldStatusChange(orderId: orderId, status: .completed, providerStatus: nil, raw: nil))]
         case .submitted: return [pending, .paymentSubmitted]
+        case .rejected:
+            return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
+                message: "The payment was declined. Choose another payment option.", detail: "submission:FAILED", recoverable: false))]
+        case .expired:
+            return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
+                message: "The payment expired before it completed. Choose another payment option.", detail: "submission:EXPIRED",
+                recoverable: false))]
         case .verificationPending where !mayHaveFinancialAttempt:
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.verificationPending,
                 message: "The provider is reviewing the customer's verification. No payment was attempted.", recoverable: false))]

@@ -114,13 +114,59 @@ final class StripeFlowControllerTests: XCTestCase {
     func testSubmissionReadPreventsNativeWorkForExistingFinancialOutcomes() async throws {
         for (status, next, expected): (String, String, StripeFlowController.Outcome) in [
             ("SUCCEEDED", "COMPLETE", .completed), ("SUBMITTED", "WAIT_FOR_PAYMENT", .submitted),
-            ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .pending), ("UNKNOWN", "WAIT_FOR_PROVIDER", .pending)] {
+            ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .pending), ("UNKNOWN", "WAIT_FOR_PROVIDER", .pending),
+            ("FAILED", "NONE", .rejected), ("REJECTED", "NONE", .rejected), ("EXPIRED", "NONE", .expired)] {
             let h = try FlowHarness()
             h.client.responses = [FlowHarness.read(status, next)]
             let result = try await h.flow.run()
             XCTAssertEqual(result, expected)
             XCTAssertEqual(h.factory.value, 0)
             XCTAssertTrue(h.driver.calls.isEmpty)
+            await h.flow.close()
+        }
+    }
+
+    func testDefiniteDeclineOrExpiryAfterCheckoutIsARejectionNotAnUnknownOutcome() async throws {
+        for (status, expected): (String, StripeFlowController.Outcome) in [
+            ("FAILED", .rejected), ("REJECTED", .rejected), ("EXPIRED", .expired)] {
+            let h = try FlowHarness()
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+                                                          FlowHarness.read(status, "NONE")]
+            let outcome = try await h.flow.run()
+            XCTAssertEqual(outcome, expected, status)
+            XCTAssertTrue(h.flow.mayHaveFinancialAttempt)
+            await h.flow.close()
+        }
+    }
+
+    func testFailureBeforeTheFirstReadMayHaveAPaymentOnlyWhenThisDeviceClaimedOneOrCannotTell() async throws {
+        for (claimed, unreadable, expected) in [(false, false, false), (true, false, true), (false, true, true)] {
+            let h = try FlowHarness()
+            h.store.value.submissionStarted = claimed
+            h.store.unreadable = unreadable
+            h.client.responses = [.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)]
+            do { _ = try await h.flow.run(); XCTFail("Expected an unavailable read") } catch PaymentActionError.transport { }
+            XCTAssertEqual(h.flow.mayHaveFinancialAttempt, expected, "claimed: \(claimed), unreadable: \(unreadable)")
+            XCTAssertEqual(h.factory.value, 0)
+            await h.flow.close()
+        }
+    }
+
+    func testServerReportedSessionOrSubmissionMayHaveAPaymentWhenTheFenceCannotBeWritten() async throws {
+        for (name, response) in [("IN_PROGRESS", FlowHarness.read("IN_PROGRESS", "WAIT_FOR_PROVIDER")),
+                                 ("UNKNOWN", FlowHarness.read("UNKNOWN", "WAIT_FOR_PROVIDER")),
+                                 ("SUBMITTED", FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")),
+                                 ("SUCCEEDED", FlowHarness.read("SUCCEEDED", "COMPLETE")),
+                                 ("FAILED", FlowHarness.read("FAILED", "NONE")), ("EXPIRED", FlowHarness.read("EXPIRED", "NONE")),
+                                 ("RESUME", FlowHarness.resume())] {
+            let h = try FlowHarness()
+            h.store.unwritable = true
+            h.client.responses = [response]
+            do { _ = try await h.flow.run(); XCTFail("\(name): expected the fence write to fail") }
+            catch PaymentActionError.storage { }
+            XCTAssertFalse(h.store.value.submissionStarted, name)
+            XCTAssertTrue(h.flow.mayHaveFinancialAttempt, name)
+            XCTAssertEqual(h.factory.value, 0, name)
             await h.flow.close()
         }
     }
@@ -210,6 +256,7 @@ final class StripeFlowControllerTests: XCTestCase {
         h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()]
         let outcome = try await h.flow.run()
         XCTAssertEqual(outcome, .cancelled)
+        XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
         XCTAssertFalse(h.store.value.submissionStarted)
         XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
         await h.flow.close()
@@ -279,39 +326,42 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertNil(root.presentedViewController)
     }
 
-    func testDismissingBeforeSubmissionReadResolvesReportsPendingWithoutAssumingCancellation() async throws {
+    func testCancelBeforeTheSubmissionReadResolvesIsACancelUnlessThisDeviceClaimedAPayment() async throws {
         UIView.setAnimationsEnabled(false)
         defer { UIView.setAnimationsEnabled(true) }
         let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = root; window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        let client = FlowClient(), counter = FlowCounter(), driver = FlowDriver()
-        client.delay = true
-        var cancelled = 0, pending = 0
-        var errors: [String] = []
-        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
-            handlers: MeldEventHandlers(onStatusChange: { status in
-                XCTAssertEqual(status.status, .pending); XCTAssertTrue(errors.isEmpty); pending += 1
-            }, onCancel: { _ in cancelled += 1 }, onError: { errors.append($0.code) }), client: client, store: FlowStore(),
-            factory: { counter.value += 1; return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
-        for _ in 0..<100 {
-            if client.delayed != nil { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
+        for claimed in [false, true] {
+            let client = FlowClient(), counter = FlowCounter(), driver = FlowDriver(), store = FlowStore()
+            client.delay = true
+            store.value.submissionStarted = claimed
+            var cancelled = 0, pending = 0
+            var errors: [String] = []
+            let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
+                handlers: MeldEventHandlers(onStatusChange: { status in
+                    XCTAssertEqual(status.status, .pending); XCTAssertTrue(errors.isEmpty); pending += 1
+                }, onCancel: { _ in cancelled += 1 }, onError: { errors.append($0.code) }), client: client, store: store,
+                factory: { counter.value += 1; return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
+            for _ in 0..<100 {
+                if client.delayed != nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController)
+            let cancel = try XCTUnwrap(navigation.topViewController?.navigationItem.leftBarButtonItem)
+            UIApplication.shared.sendAction(try XCTUnwrap(cancel.action), to: cancel.target, from: nil, for: nil)
+            client.delayed?(FlowHarness.bootstrap[0]); client.delayed = nil
+            for _ in 0..<100 {
+                if root.presentedViewController == nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertEqual(pending, claimed ? 1 : 0, "claimed: \(claimed)")
+            XCTAssertEqual(cancelled, claimed ? 0 : 1, "claimed: \(claimed)")
+            XCTAssertEqual(errors, claimed ? ["PAYMENT_OUTCOME_UNKNOWN"] : [], "claimed: \(claimed)")
+            XCTAssertEqual(counter.value, 0)
+            XCTAssertNil(root.presentedViewController)
+            session.unmount()
         }
-        let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController)
-        let cancel = try XCTUnwrap(navigation.topViewController?.navigationItem.leftBarButtonItem)
-        UIApplication.shared.sendAction(try XCTUnwrap(cancel.action), to: cancel.target, from: nil, for: nil)
-        client.delayed?(FlowHarness.bootstrap[0]); client.delayed = nil
-        for _ in 0..<100 {
-            if root.presentedViewController == nil { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTAssertEqual(pending, 1)
-        XCTAssertEqual(cancelled, 0)
-        XCTAssertEqual(errors, ["PAYMENT_OUTCOME_UNKNOWN"])
-        XCTAssertEqual(counter.value, 0)
-        XCTAssertNil(root.presentedViewController)
-        session.unmount()
     }
 
     func testEveryOutcomeEndsInOneTerminalEventThatSaysWhetherAPaymentMayExist() {
@@ -332,6 +382,12 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(names(.submitted, attempt: true), ["status:pending", "submitted"])
         XCTAssertEqual(names(.completed, attempt: true), ["status:completed"])
         XCTAssertEqual(names(.cancelled, attempt: false), ["cancel"])
+        XCTAssertEqual(names(.rejected, attempt: true), ["error:PAYMENT_REJECTED"])
+        XCTAssertEqual(names(.expired, attempt: true), ["error:PAYMENT_REJECTED"])
+        let details = [StripeFlowController.Outcome.rejected, .expired].flatMap {
+            StripePaymentSession.events(for: $0, mayHaveFinancialAttempt: true, orderId: "synthetic-order")
+        }.compactMap { event -> String? in if case let .error(error) = event { return error.detail }; return nil }
+        XCTAssertEqual(details, ["submission:FAILED", "submission:EXPIRED"])
     }
 
     func testFailureCodeSaysWhetherAPaymentMayExistAndKeepsOnlyTheErrorIdentity() {
@@ -357,18 +413,26 @@ final class StripeFlowControllerTests: XCTestCase {
         let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = root; window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        let cases: [([Result<[String: Any], Error>], Bool, String)] = [
-            ([.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)], false, "PAYMENT_OUTCOME_UNKNOWN"),
-            ([FlowHarness.bootstrap[0]], true, "PRESENTATION_FAILED")]
-        for (responses, factoryFails, expected) in cases {
-            let client = FlowClient()
+        let unavailable: [Result<[String: Any], Error>] = [.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)]
+        let cases: [([Result<[String: Any], Error>], Bool, Bool, Bool, String)] = [
+            (unavailable, false, false, false, "PRESENTATION_FAILED"),
+            (unavailable, true, false, false, "PAYMENT_OUTCOME_UNKNOWN"),
+            ([FlowHarness.read("FAILED", "NONE")], false, false, false, "PAYMENT_REJECTED"),
+            ([FlowHarness.read("IN_PROGRESS", "WAIT_FOR_PROVIDER")], false, false, true, "PAYMENT_OUTCOME_UNKNOWN"),
+            ([FlowHarness.read("SUCCEEDED", "COMPLETE")], false, false, true, "PAYMENT_OUTCOME_UNKNOWN"),
+            ([FlowHarness.resume()], false, false, true, "PAYMENT_OUTCOME_UNKNOWN"),
+            ([FlowHarness.bootstrap[0]], false, true, false, "PRESENTATION_FAILED")]
+        for (responses, claimed, factoryFails, unwritable, expected) in cases {
+            let client = FlowClient(), store = FlowStore()
             client.responses = responses
+            store.value.submissionStarted = claimed
+            store.unwritable = unwritable
             var events: [String] = []
             var handlers = MeldEventHandlers(onError: { events.append("error:\($0.code)") }).gated()
             let backstop = handlers.sessionEnded
             handlers.sessionEnded = { events.append("ended"); backstop?($0) }
             let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil, handlers: handlers,
-                client: client, store: FlowStore(), factory: {
+                client: client, store: store, factory: {
                     if factoryFails { throw StripeNativeError.unavailable }
                     return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() }
                 })
@@ -485,13 +549,20 @@ private final class FlowClient: PaymentActionSending {
 }
 private final class FlowStore: WalletAttemptStoring {
     var value = WalletAttemptRecord()
-    func record() throws -> WalletAttemptRecord { value }
+    var unreadable = false, unwritable = false
+    func record() throws -> WalletAttemptRecord {
+        if unreadable { throw PaymentActionError.storage }
+        return value
+    }
     func claimSubmission() throws -> UUID {
         guard !value.submissionStarted else { throw PaymentActionError.alreadyAttempted }
         value.submissionStarted = true; return value.submissionKey
     }
     func claimVerification() throws { value.verificationOpened = true }
-    func observeSubmission() throws { value.submissionStarted = true }
+    func observeSubmission() throws {
+        if unwritable { throw PaymentActionError.storage }
+        value.submissionStarted = true
+    }
 }
 @MainActor
 private final class FlowForms: StripeFlowPresenting {

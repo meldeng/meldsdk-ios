@@ -273,10 +273,13 @@ public enum Meld {
 // MARK: - Native Apple Pay
 
 public extension Meld {
-    /// Whether this device and user can pay with Apple Pay right now (a card is provisioned and
-    /// payments aren't restricted). Check before offering an Apple Pay button; Apple Pay orders are
-    /// then presented through the normal `Meld.mount(order, applePay:handlers:)`.
+    /// Whether this device and user can pay with Apple Pay right now: payments aren't restricted and
+    /// Wallet holds a card on a network some Apple Pay provider here accepts (Visa, Mastercard, American
+    /// Express, Discover or Maestro). A device with an empty Wallet reports false. It does not know the
+    /// provider: Mercuryo takes only Visa and Mastercard, and its mount reports `APPLE_PAY_UNAVAILABLE`
+    /// before the sheet when Wallet holds neither. Check before creating an Apple Pay order; it is then
+    /// presented through the normal `Meld.mount(order, applePay:handlers:)`.
     static func canPresentApplePay() -> Bool {
-        PKPaymentAuthorizationController.canMakePayments()
+        MeldApplePayAvailability.unavailableReason(requiring: MeldApplePayAvailability.supportedNetworks) == nil
     }
 }

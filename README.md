@@ -340,7 +340,11 @@ That outcome is logged, not delivered, so unmounting on `onPaymentSubmitted` is 
   `handle.unmount()` tears it down (removes the widget or dismisses the sheet). Retain the handle
   while the payment UI is in use; releasing it also unmounts the session. See
   [Native Apple Pay](#native-apple-pay).
-- `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now.
+- `Meld.canPresentApplePay()` → `Bool` — whether Apple Pay is usable on this device/user now: payments
+  aren't restricted and Wallet holds a card on a network some Apple Pay provider accepts (Visa,
+  Mastercard, American Express, Discover or Maestro). An empty Wallet reports `false`. The check has
+  no provider context; a Mercuryo order still reports `APPLE_PAY_UNAVAILABLE` before its sheet when
+  Wallet holds no Visa or Mastercard.
 - `MeldApplePayRequest` — amount/currency, display label and fallback email; wallet/IP fields
   are required only for historical orders using the legacy endpoint.
 - `MeldOrder.from(jsonData:)` / `.from(jsonString:)` — decode your backend's order response.
@@ -368,15 +372,17 @@ still binds consent and completion to the order's customer. Use the email associ
 The controller reads submission state before opening provider UI, preserves an existing session,
 and stores only the shared device attempt fence and mutation UUID. Transport retries reuse the same
 body and key; each actual checkout callback receives its own pair. A KYC result during checkout
-resumes verification and re-quotes the same session. An unresolved payment emits `pending`, then
-`onError(PAYMENT_OUTCOME_UNKNOWN)`; so does pending verification once a payment may have been
-attempted. Pending verification with no payment attempt reports `onError(VERIFICATION_PENDING)`.
-Any other failure reports `PAYMENT_OUTCOME_UNKNOWN` when a payment may have been attempted, and
-`PRESENTATION_FAILED` otherwise. Native SDK completion alone does not emit a completed order. Track
-that existing order through your backend. Unmount dismisses owned UI, suppresses late events and
-clears SDK state after pending work finishes. Synthetic simulator tests do not establish
-device/provider payment acceptance; enrolled Stripe account, trusted app, Apple Pay entitlements and
-device checks remain required before rollout.
+resumes verification and re-quotes the same session. A payment may have been attempted once this
+device has claimed the order's submission, or the server has reported an existing session or
+submission. An unresolved payment emits `pending`, then `onError(PAYMENT_OUTCOME_UNKNOWN)`; so do
+pending verification and Cancel once a payment may have been attempted. Before that, Cancel reports
+`onCancel` and pending verification reports `onError(VERIFICATION_PENDING)`. A declined or expired
+submission reports `onError(PAYMENT_REJECTED)`. Any other failure reports `PAYMENT_OUTCOME_UNKNOWN`
+when a payment may have been attempted, and `PRESENTATION_FAILED` otherwise. Native SDK completion
+alone does not emit a completed order. Track that existing order through your backend. Unmount
+dismisses owned UI, suppresses late events and clears SDK state after pending work finishes.
+Synthetic simulator tests do not establish device/provider payment acceptance; enrolled Stripe
+account, trusted app, Apple Pay entitlements and device checks remain required before rollout.
 
 Both package managers pin Stripe to **26.11.0**. SwiftPM uses Stripe's official
 [`stripe-ios-spm`](https://github.com/stripe/stripe-ios-spm) repository. The 25.11 package does not expose

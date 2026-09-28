@@ -126,6 +126,9 @@ final class StripeNativeContractTests: XCTestCase {
         XCTAssertEqual(request.currencyCode, "USD")
         XCTAssertEqual(request.paymentSummaryItems.last?.amount, NSDecimalNumber(value: 20))
         XCTAssertEqual(request.paymentSummaryItems.last?.type, .final)
+        XCTAssertEqual(Set(MeldApplePayAvailability.supportedNetworks),
+                       Set(request.supportedNetworks).union(MercuryoApplePayAdapter.supportedNetworks),
+                       "The generic Apple Pay preflight covers exactly the networks the SDK's own sheets accept")
         XCTAssertThrowsError(try value.paymentRequest(MeldApplePayRequest(amount: 30, currencyCode: "USD")))
         XCTAssertThrowsError(try value.paymentRequest(MeldApplePayRequest(amount: 20, currencyCode: "EUR")))
         XCTAssertThrowsError(try value.paymentRequest(MeldApplePayRequest(amount: 20, currencyCode: "USD", summaryItemLabel: "")))

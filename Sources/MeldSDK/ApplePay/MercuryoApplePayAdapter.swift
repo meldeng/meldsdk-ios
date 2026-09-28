@@ -7,6 +7,8 @@ struct MercuryoApplePayAdapter: MeldAdapter {
     let label = "Mercuryo Apple Pay (APPLE_PAY / native sheet)"
     let capabilities = MeldCapabilities(embeddable: false, surface: "native-applepay", requiresUserGesture: true)
     let presentations = [MeldAdapterPresentation("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN")]
+    /// Mercuryo's merchant is in LT and supports Visa/Mastercard with 3DS, credit and debit.
+    static let supportedNetworks: [PKPaymentNetwork] = [.visa, .masterCard]
 
     func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
         order.hasCompatibleLegacyPresentation("NATIVE_TOKEN") && hasWalletDetails(order)
@@ -71,10 +73,11 @@ struct MercuryoApplePayAdapter: MeldAdapter {
               let merchant = order.paymentMethodResponseDetails?["merchantIdentifier"] as? String else {
             throw MeldApplePayError.invalidOrder("A new wallet payment needs a MeldApplePayRequest with the order's amount and currency.")
         }
-        guard Meld.canPresentApplePay() else { throw MeldApplePayError.unavailable }
-        // Mercuryo's merchant is in LT and supports Visa/Mastercard with 3DS, credit and debit.
+        guard MeldApplePayAvailability.unavailableReason(requiring: Self.supportedNetworks) == nil else {
+            throw MeldApplePayError.unavailable
+        }
         return ApplePayCoordinator(orderId: order.id, merchantIdentifier: merchant, request: request,
-                                   merchantCountryCode: "LT", supportedNetworks: [.visa, .masterCard],
+                                   merchantCountryCode: "LT", supportedNetworks: Self.supportedNetworks,
                                    merchantCapabilities: [.threeDSecure, .credit, .debit], handlers: handlers,
                                    process: process, onFinished: finished)
     }

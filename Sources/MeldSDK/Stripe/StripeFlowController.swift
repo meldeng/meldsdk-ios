@@ -30,7 +30,7 @@ final class StripeFlowLifetime: @unchecked Sendable {
 
 @MainActor
 final class StripeFlowController {
-    enum Outcome { case completed, submitted, pending, verificationPending, cancelled }
+    enum Outcome { case completed, submitted, pending, verificationPending, cancelled, rejected, expired }
     private let order: StripeNativeOrder
     private let client: PaymentActionSending
     private let store: WalletAttemptStoring
@@ -42,10 +42,9 @@ final class StripeFlowController {
     private let request: PKPaymentRequest?
     private var runtime: StripeSdkRuntime?
     private var financialStarted = false
-    private var unsubmittedConfirmed = false
     private var session: String?
     private var started = false
-    var mayHaveFinancialAttempt: Bool { financialStarted || !unsubmittedConfirmed }
+    var mayHaveFinancialAttempt: Bool { financialStarted || ((try? store.record())?.submissionStarted ?? true) }
 
     init(order: StripeNativeOrder, client: PaymentActionSending, store: WalletAttemptStoring,
          forms: StripeFlowPresenting, lifetime: StripeFlowLifetime, request: PKPaymentRequest?,
@@ -64,10 +63,9 @@ final class StripeFlowController {
         switch submission {
         case .notStarted(let auth):
             guard !(try store.record()).submissionStarted else { throw PaymentActionError.alreadyAttempted }
-            unsubmittedConfirmed = true
             authentication = auth
         case .resumeSession(let existing, let auth):
-            try store.observeSubmission(); session = existing; financialStarted = true; authentication = auth
+            session = existing; financialStarted = true; try store.observeSubmission(); authentication = auth
         default: return try observe(submission)
         }
         try check()
@@ -238,12 +236,18 @@ final class StripeFlowController {
 
     private func observe(_ submission: StripeActionResponse.Submission) throws -> Outcome {
         try check()
+        switch submission {
+        case .notStarted: break
+        case .resumeSession, .inProgress, .submitted, .completed, .failed, .expired, .unknown: financialStarted = true
+        }
         try store.observeSubmission()
         switch submission {
         case .completed: return .completed
         case .submitted: return .submitted
         case .inProgress, .unknown: return .pending
-        case .failed, .expired, .notStarted, .resumeSession: throw PaymentActionError.alreadyAttempted
+        case .failed: return .rejected
+        case .expired: return .expired
+        case .notStarted, .resumeSession: throw PaymentActionError.alreadyAttempted
         }
     }
 
