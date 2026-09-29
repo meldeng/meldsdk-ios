@@ -4,13 +4,15 @@ import PassKit
 import StripePayments
 import UIKit
 
-/// The pinned Stripe API is isolated here. No global publishable key or integrator callbacks.
+/// The pinned Stripe API is isolated here. No integrator callbacks. The shared client carries the
+/// order's key because Stripe's seamless sign-in lookup reads it, not the coordinator's client.
 @MainActor
 final class StripeSdkDriver: StripeSdkDriving {
     private let coordinator: CryptoOnrampCoordinator
 
     static func create(publicKey: String) async throws -> StripeSdkDriver {
         let client = STPAPIClient(publishableKey: publicKey)
+        STPAPIClient.shared.publishableKey = publicKey
         return try await StripeSdkDriver(coordinator: CryptoOnrampCoordinator.create(apiClient: client))
     }
 
