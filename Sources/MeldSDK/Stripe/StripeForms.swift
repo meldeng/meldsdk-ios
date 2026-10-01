@@ -8,17 +8,29 @@ enum StripeFormField: String, CaseIterable {
         switch self {
         case .email: return "Email address"
         case .name: return "Full name (optional)"
-        case .phone: return "Phone number, including country code"
+        case .phone: return "Mobile number"
         case .firstName: return "First name"
         case .lastName: return "Last name"
         case .birthday: return "Date of birth (YYYY-MM-DD)"
-        case .idNumber: return "Identification number"
+        case .idNumber: return "Social Security number"
         case .line1: return "Street address"
         case .line2: return "Apartment or suite (optional)"
         case .city: return "City"
         case .state: return "State (two letters)"
         case .postalCode: return "ZIP code"
         }
+    }
+
+    /// What the customer typed, in the form Stripe takes. A ten-digit US number gains its country code.
+    func normalized(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard self == .phone else { return self == .state ? trimmed.uppercased() : trimmed }
+        // Deliberate: the Stripe flow is US-only, so ten digits without a country code are read as a US number.
+        let digits = trimmed.filter(\.isNumber)
+        if trimmed.hasPrefix("+") { return "+" + digits }
+        if digits.count == 10 { return "+1" + digits }
+        if digits.count == 11, digits.hasPrefix("1") { return "+" + digits }
+        return trimmed
     }
 
     func valid(_ text: String) -> Bool {
@@ -49,15 +61,15 @@ enum StripeFormField: String, CaseIterable {
 
 @MainActor
 final class StripeForms: StripeFlowPresenting {
-    let presenter: UIViewController
-    private let progress: (String) -> Void
+    private let root: () -> UIViewController?
     private var active = true
     private var form: StripeFormViewController?
     private var navigation: UINavigationController?
+    /// Cancel on a form that is busy with Meld or Stripe: no form call is waiting, so the session cancels.
+    var onCancelWhileBusy: (() -> Void)?
 
-    init(presenter: UIViewController, progress: @escaping (String) -> Void) {
-        self.presenter = presenter; self.progress = progress
-    }
+    /// Forms present over the host's top-most screen only while the customer is needed; there is no host sheet.
+    init(root: @escaping () -> UIViewController?) { self.root = root }
 
     func email() async throws -> String { try await collect([.email], title: "Sign in to Link")[.email]! }
 
@@ -76,7 +88,7 @@ final class StripeForms: StripeFlowPresenting {
         let needsAddress = all || fields.contains { $0.hasPrefix("ADDRESS_") }
         if needsAddress { wanted += Self.addressFields }
         guard !wanted.isEmpty else { throw StripeNativeError.invalidResponse }
-        let values = try await collect(wanted, title: "Verify your identity")
+        let values = try await collect(wanted, title: wanted == [.idNumber] ? "Confirm your identity" : "Verify your identity")
         let birthday = values[.birthday].flatMap(StripeFormField.birthDate)
         return StripeIdentityInput(firstName: values[.firstName], lastName: values[.lastName], idNumber: values[.idNumber],
                                    birthDay: birthday?.day, birthMonth: birthday?.month, birthYear: birthday?.year,
@@ -87,12 +99,19 @@ final class StripeForms: StripeFlowPresenting {
         Self.address(try await collect(Self.addressFields, title: "Update your address"))
     }
 
-    func showProgress(_ message: String) { if active { progress(message) } }
+    func showProgress(_ message: String) { if active { form?.showBusy(message) } }
+
+    func handOff() async throws -> UIViewController {
+        guard active else { throw StripeNativeError.cancelled }
+        await dismissSheet()
+        guard active, let top = top() else { throw StripeNativeError.unavailable }
+        return top
+    }
 
     func close() {
         guard active else { return }
         active = false
-        form?.cancel()
+        form?.abandon()
         navigation?.dismiss(animated: false)
         navigation = nil; form = nil
     }
@@ -101,105 +120,204 @@ final class StripeForms: StripeFlowPresenting {
 
     private static func address(_ values: [StripeFormField: String]) -> StripeAddressInput {
         StripeAddressInput(line1: values[.line1]!, line2: values[.line2].flatMap { $0.isEmpty ? nil : $0 },
-                           city: values[.city]!, state: values[.state]!.uppercased(), postalCode: values[.postalCode]!, country: "US")
+                           city: values[.city]!, state: values[.state]!, postalCode: values[.postalCode]!, country: "US")
     }
 
+    private func top() -> UIViewController? {
+        var top = root()
+        while let next = top?.presentedViewController, !next.isBeingDismissed { top = next }
+        return top?.viewIfLoaded?.window == nil ? nil : top
+    }
+
+    private func dismissSheet() async {
+        guard let navigation else { return }
+        self.navigation = nil; form = nil
+        await withCheckedContinuation { done in navigation.dismiss(animated: true) { done.resume() } }
+    }
+
+    /// A submitted form stays up, busy, until the next form replaces it or a provider screen takes over.
     private func collect(_ fields: [StripeFormField], title: String) async throws -> [StripeFormField: String] {
-        guard active, !Task.isCancelled, form == nil, presenter.presentedViewController == nil,
-              presenter.viewIfLoaded?.window != nil else { throw StripeNativeError.unavailable }
-        return try await withCheckedThrowingContinuation { continuation in
-            let form = StripeFormViewController(fields: fields, title: title) { [weak self] result in
-                guard let self else { continuation.resume(throwing: StripeNativeError.cancelled); return }
-                let navigation = self.navigation
-                self.form = nil; self.navigation = nil
-                guard self.active, let navigation else {
-                    navigation?.dismiss(animated: false)
-                    continuation.resume(throwing: StripeNativeError.cancelled)
-                    return
-                }
-                navigation.dismiss(animated: false) {
-                    continuation.resume(with: self.active ? result : .failure(StripeNativeError.cancelled))
-                }
-            }
-            self.form = form
-            let navigation = UINavigationController(rootViewController: form)
-            self.navigation = navigation
-            navigation.modalPresentationStyle = .pageSheet
-            navigation.isModalInPresentation = true
-            presenter.present(navigation, animated: true)
+        guard active, !Task.isCancelled else { throw StripeNativeError.unavailable }
+        let form = StripeFormViewController(fields: fields, title: title) { [weak self] in self?.onCancelWhileBusy?() }
+        self.form = form
+        if let navigation {
+            navigation.setViewControllers([form], animated: true)
+        } else {
+            try await present(form)
         }
+        do {
+            return try await form.values()
+        } catch {
+            if self.form === form { await dismissSheet() }
+            throw active ? error : StripeNativeError.cancelled
+        }
+    }
+
+    /// Waits out a sheet that is still animating away; UIKit silently refuses to present over one.
+    private func present(_ form: StripeFormViewController) async throws {
+        let navigation = UINavigationController(rootViewController: form)
+        navigation.navigationBar.prefersLargeTitles = true
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.isModalInPresentation = true
+        guard let presenter = await settledTop(), active else {
+            self.form = nil
+            throw StripeNativeError.unavailable
+        }
+        presenter.present(navigation, animated: true)
+        guard navigation.presentingViewController != nil else {
+            self.form = nil
+            throw StripeNativeError.unavailable
+        }
+        self.navigation = navigation
+    }
+
+    private func settledTop() async -> UIViewController? {
+        for _ in 0..<40 {
+            if let top = top(), top.presentedViewController == nil, !top.isBeingPresented, !top.isBeingDismissed { return top }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return nil
     }
 }
 
 @MainActor
-private final class StripeFormViewController: UIViewController {
+private final class StripeFormViewController: UIViewController, UITextFieldDelegate {
     private let fields: [StripeFormField]
     private var inputs: [StripeFormField: UITextField] = [:]
     private let errorLabel = UILabel()
-    private var completion: ((Result<[StripeFormField: String], Error>) -> Void)?
+    private let button = UIButton(configuration: .filled())
+    private var continuation: CheckedContinuation<[StripeFormField: String], Error>?
+    private var early: Result<[StripeFormField: String], Error>?
+    private var answered = false
+    private var busy = false
+    private let onBusyCancel: () -> Void
 
-    init(fields: [StripeFormField], title: String, completion: @escaping (Result<[StripeFormField: String], Error>) -> Void) {
-        self.fields = fields; self.completion = completion
+    init(fields: [StripeFormField], title: String, onBusyCancel: @escaping () -> Void) {
+        self.fields = fields; self.onBusyCancel = onBusyCancel
         super.init(nibName: nil, bundle: nil); self.title = title
+    }
+
+    /// The customer's answer, once. Installed right after presentation, before any input can arrive.
+    func values() async throws -> [StripeFormField: String] {
+        if let early { return try early.get() }
+        return try await withCheckedThrowingContinuation { continuation = $0 }
     }
     required init?(coder: NSCoder) { nil }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        navigationItem.largeTitleDisplayMode = .always
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Continue", style: .done, target: self, action: #selector(submit))
         let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false
-        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scroll); scroll.addSubview(stack)
+        scroll.keyboardDismissMode = .interactive
+        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 8; stack.translatesAutoresizingMaskIntoConstraints = false
+        var configuration = button.configuration ?? .filled()
+        configuration.title = "Continue"; configuration.cornerStyle = .large
+        configuration.buttonSize = .large; configuration.imagePadding = 8
+        button.configuration = configuration
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(submit), for: .touchUpInside)
+        view.addSubview(scroll); scroll.addSubview(stack); view.addSubview(button)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
-            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -20),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: button.topAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -12),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -20),
-            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40),
+            button.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            button.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            button.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -12),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 50)
         ])
-        for field in fields {
-            let label = UILabel(); label.text = field.label; label.font = .preferredFont(forTextStyle: .subheadline)
-            label.adjustsFontForContentSizeCategory = true; label.numberOfLines = 0
-            let input = UITextField(); input.borderStyle = .roundedRect; input.accessibilityLabel = field.label
+        for (index, field) in fields.enumerated() {
+            let label = UILabel(); label.text = field.label; label.font = .preferredFont(forTextStyle: .footnote)
+            label.textColor = .secondaryLabel; label.adjustsFontForContentSizeCategory = true; label.numberOfLines = 0
+            let input = UITextField(); input.borderStyle = .none; input.accessibilityLabel = field.label
+            input.backgroundColor = .secondarySystemBackground; input.layer.cornerRadius = 12
+            input.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1)); input.leftViewMode = .always
             input.font = .preferredFont(forTextStyle: .body); input.adjustsFontForContentSizeCategory = true
             input.autocorrectionType = .no; input.spellCheckingType = .no; input.autocapitalizationType = .none
-            input.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            if field == .email { input.keyboardType = .emailAddress; input.textContentType = .emailAddress }
-            if field == .phone { input.keyboardType = .phonePad; input.textContentType = .telephoneNumber }
-            if field == .birthday { input.keyboardType = .numbersAndPunctuation }
-            if field == .idNumber { input.isSecureTextEntry = true }
+            input.heightAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
+            input.returnKeyType = index == fields.count - 1 ? .done : .next; input.delegate = self
+            switch field {
+            case .email: input.keyboardType = .emailAddress; input.textContentType = .emailAddress
+            case .phone: input.keyboardType = .phonePad; input.textContentType = .telephoneNumber; input.placeholder = "(415) 555-0123"
+            case .name: input.textContentType = .name; input.autocapitalizationType = .words
+            case .firstName: input.textContentType = .givenName; input.autocapitalizationType = .words
+            case .lastName: input.textContentType = .familyName; input.autocapitalizationType = .words
+            case .birthday: input.keyboardType = .numbersAndPunctuation; input.placeholder = "1990-03-15"
+            case .idNumber: input.isSecureTextEntry = true; input.keyboardType = .numberPad
+            case .line1: input.textContentType = .streetAddressLine1; input.autocapitalizationType = .words
+            case .line2: input.textContentType = .streetAddressLine2; input.autocapitalizationType = .words
+            case .city: input.textContentType = .addressCity; input.autocapitalizationType = .words
+            case .state: input.textContentType = .addressState; input.autocapitalizationType = .allCharacters
+            case .postalCode: input.textContentType = .postalCode; input.keyboardType = .numberPad
+            }
             inputs[field] = input; stack.addArrangedSubview(label); stack.addArrangedSubview(input)
+            stack.setCustomSpacing(16, after: input)
         }
-        errorLabel.textColor = .systemRed; errorLabel.numberOfLines = 0
+        errorLabel.textColor = .systemRed; errorLabel.numberOfLines = 0; errorLabel.font = .preferredFont(forTextStyle: .footnote)
         stack.addArrangedSubview(errorLabel)
     }
 
-    @objc func cancel() { finish(.failure(StripeNativeError.cancelled)) }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !answered { fields.first.flatMap { inputs[$0] }?.becomeFirstResponder() }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        guard let index = fields.firstIndex(where: { inputs[$0] === textField }) else { return true }
+        if index + 1 < fields.count { inputs[fields[index + 1]]?.becomeFirstResponder() } else { submit() }
+        return true
+    }
+
+    /// The button keeps the customer's place while Meld and the provider work, instead of an empty screen.
+    func showBusy(_ message: String? = nil) {
+        var configuration = button.configuration ?? .filled()
+        configuration.showsActivityIndicator = true
+        configuration.title = message ?? "Continue"
+        button.configuration = configuration
+        button.isUserInteractionEnabled = false
+        busy = true
+        inputs.values.forEach { $0.isEnabled = false }
+        UIAccessibility.post(notification: .announcement, argument: message ?? "Working")
+    }
+
+    @objc func cancel() {
+        if !answered { finish(.failure(StripeNativeError.cancelled)) } else if busy { onBusyCancel() }
+    }
+
+    /// Teardown: ends a pending answer without asking the session to cancel.
+    func abandon() { if !answered { finish(.failure(StripeNativeError.cancelled)) } }
 
     @objc private func submit() {
+        guard !answered else { return }
         var values: [StripeFormField: String] = [:]
         for field in fields {
-            let value = (inputs[field]?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = field.normalized(inputs[field]?.text ?? "")
             guard field.valid(value) else {
-                errorLabel.text = "Check \(field.label.lowercased())."
+                errorLabel.text = "Check your \(field.label.lowercased())."
                 inputs[field]?.becomeFirstResponder()
                 UIAccessibility.post(notification: .announcement, argument: errorLabel.text)
                 return
             }
             values[field] = value
         }
+        errorLabel.text = nil
+        view.endEditing(true)
+        showBusy()
         finish(.success(values))
     }
 
     private func finish(_ result: Result<[StripeFormField: String], Error>) {
-        guard let completion else { return }
-        self.completion = nil
-        view.endEditing(true)
+        guard !answered else { return }
+        answered = true
         inputs.values.forEach { $0.text = nil }
-        completion(result)
+        guard let continuation else { early = result; return }
+        self.continuation = nil
+        continuation.resume(with: result)
     }
 }

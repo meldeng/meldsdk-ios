@@ -24,12 +24,16 @@ struct StripeNativeAdapter: MeldAdapter {
 @MainActor
 final class StripePaymentSession: MeldProviderSession {
     nonisolated private let lifetime = StripeFlowLifetime()
-    private let screen = StripeProgressViewController()
-    private let navigation: UINavigationController
     private let flow: StripeFlowController
+    /// The host's top-most screen at mount. Everything presented over it during the session is the SDK's or Stripe's.
+    private weak var anchor: UIViewController?
+    private let forms: StripeForms
     private let orderID: String
     private let handlers: MeldEventHandlers
     private var task: Task<Void, Never>?
+    private var cancelling = false
+    private var stopped = false
+    private var presentationsCleared = false
 
     init(order: StripeNativeOrder, host: UIView?, request: PKPaymentRequest?, handlers: MeldEventHandlers,
          client: PaymentActionSending? = nil, store: WalletAttemptStoring? = nil,
@@ -41,31 +45,16 @@ final class StripePaymentSession: MeldProviderSession {
         var presenter = root
         while let presented = presenter.presentedViewController { presenter = presented }
         guard presenter.viewIfLoaded?.window != nil, !presenter.isBeingDismissed else { throw StripeNativeError.unavailable }
-        navigation = UINavigationController(rootViewController: screen)
-        navigation.modalPresentationStyle = .pageSheet; navigation.isModalInPresentation = true
-        orderID = order.id; self.handlers = handlers
-        let forms = StripeForms(presenter: screen, progress: { [weak screen] in screen?.message.text = $0 })
+        orderID = order.id; self.handlers = handlers; anchor = presenter
+        let forms = StripeForms(root: { [weak root] in root })
+        self.forms = forms
         flow = StripeFlowController(order: order, client: client ?? PaymentActionClient(descriptor: order.actions),
                                     store: store ?? WalletAttemptStore(identity: order.actions.identity), forms: forms,
                                     lifetime: lifetime, request: request,
                                     factory: factory ?? { try await StripeSdkRuntime.open { try await StripeSdkDriver.create(publicKey: order.publicKey) } })
-        screen.onCancel = { [weak self] in self?.cancel() }
-        // Asynchronous presentation lets mount return its lifecycle handle before any callbacks.
-        DispatchQueue.main.async { [weak self, weak presenter] in
-            guard let self, self.lifetime.active else { return }
-            if let presenter, presenter.presentedViewController == nil, presenter.viewIfLoaded?.window != nil {
-                presenter.present(self.navigation, animated: true) { [weak self] in self?.start() }
-            }
-            if self.navigation.presentingViewController == nil { self.presentationFailed() }
-        }
-    }
-
-    private func presentationFailed() {
-        lifetime.ifActive {
-            handlers.onError?(Self.failure(StripeNativeError.unavailable, mayHaveFinancialAttempt: flow.mayHaveFinancialAttempt,
-                                           orderId: orderID))
-        }
-        Task { await stop() }
+        forms.onCancelWhileBusy = { [weak self] in self?.cancel() }
+        // Mount returns its lifecycle handle before any callbacks. Nothing is shown until the flow needs the customer.
+        DispatchQueue.main.async { [weak self] in self?.start() }
     }
 
     private func start() {
@@ -74,11 +63,15 @@ final class StripePaymentSession: MeldProviderSession {
         guard lifetime.active else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            do {
-                let outcome = try await self.flow.run()
-                self.lifetime.ifActive { self.emit(outcome) }
-            } catch {
-                self.lifetime.ifActive {
+            let result: Result<StripeFlowController.Outcome, Error>
+            do { result = .success(try await self.flow.run()) } catch { result = .failure(error) }
+            // Cleared first, so whatever the host presents from a terminal callback stays up.
+            await self.dismissPresented()
+            guard !self.cancelling else { return }
+            self.lifetime.ifActive {
+                switch result {
+                case let .success(outcome): self.emit(outcome)
+                case let .failure(error):
                     self.handlers.onError?(Self.failure(error, mayHaveFinancialAttempt: self.flow.mayHaveFinancialAttempt,
                                                         orderId: self.orderID))
                 }
@@ -139,40 +132,42 @@ final class StripePaymentSession: MeldProviderSession {
                          detail: detail, recoverable: false)
     }
 
-    private func cancel() {
-        guard lifetime.active else { return }
-        lifetime.ifActive { emit(flow.mayHaveFinancialAttempt ? .pending : .cancelled) }
-        lifetime.close()
-        Task { await stop() }
-    }
-
     nonisolated func unmount() {
         lifetime.close()
         Task { @MainActor in await self.stop() }
     }
 
+    /// The customer cancelled a busy form: what the old host sheet's Cancel did, at any point in the flow.
+    private func cancel() {
+        guard lifetime.active, !cancelling else { return }
+        cancelling = true
+        let outcome: StripeFlowController.Outcome = flow.mayHaveFinancialAttempt ? .pending : .cancelled
+        Task {
+            await dismissPresented()
+            lifetime.ifActive { emit(outcome) }
+            await stop()
+        }
+    }
+
     private func stop() async {
+        guard !stopped else { return }
+        stopped = true
         lifetime.close()
-        (navigation.presentingViewController ?? navigation).dismiss(animated: false)
+        await dismissPresented()
         await flow.close()
         handlers.sessionEnded?(orderID)
     }
-}
 
-@MainActor
-private final class StripeProgressViewController: UIViewController {
-    let message = UILabel()
-    var onCancel: (() -> Void)?
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "Crypto purchase"; view.backgroundColor = .systemBackground
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
-        message.text = "Preparing your payment"; message.numberOfLines = 0; message.textAlignment = .center
-        message.font = .preferredFont(forTextStyle: .body); message.adjustsFontForContentSizeCategory = true
-        message.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(message)
-        NSLayoutConstraint.activate([message.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            message.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            message.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24)])
+    /// Whatever the SDK or Stripe presented over the screen that was top-most at mount.
+    private func dismissPresented() async {
+        guard !presentationsCleared else { return }
+        presentationsCleared = true
+        forms.close()
+        guard let anchor else { return }
+        for _ in 0..<40 where anchor.presentedViewController?.isBeingDismissed == true {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard anchor.presentedViewController != nil else { return }
+        await withCheckedContinuation { done in anchor.dismiss(animated: false) { done.resume() } }
     }
-    @objc private func cancel() { onCancel?() }
 }
