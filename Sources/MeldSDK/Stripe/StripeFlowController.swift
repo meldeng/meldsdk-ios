@@ -10,7 +10,8 @@ struct StripeRegistrationInput: CustomStringConvertible {
 
 @MainActor
 protocol StripeFlowPresenting: AnyObject {
-    var presenter: UIViewController { get }
+    /// Clears any form so a provider screen presents over the host, and returns the screen to present from.
+    func handOff() async throws -> UIViewController
     func email() async throws -> String
     func registration() async throws -> StripeRegistrationInput
     func identity(fields: [String]) async throws -> StripeIdentityInput
@@ -81,8 +82,8 @@ final class StripeFlowController {
             if session == nil {
                 try await confirmIdentity()
                 try await sdk { try await $0.registerWallet(address: self.order.walletAddress, network: self.order.walletNetwork) }
-                forms.showProgress("Choose a payment method")
-                try await sdk { try await $0.collectPayment(request: self.request, from: self.forms.presenter) }
+                let presenter = try await forms.handOff()
+                try await sdk { try await $0.collectPayment(request: self.request, from: presenter) }
                 let token = try await sdk { try await $0.createPaymentToken() }
                 let key = try store.claimSubmission()
                 financialStarted = true
@@ -133,7 +134,8 @@ final class StripeFlowController {
             prepared = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID())
         }
         let intent = try prepared.authorizationIntent(now: now())
-        let customer = try await sdk { try await $0.authorize(intent: intent, from: self.forms.presenter) }
+        let presenter = try await forms.handOff()
+        let customer = try await sdk { try await $0.authorize(intent: intent, from: presenter) }
         let linked = try await action("COMPLETE_CUSTOMER_LINK", fields: ["customerHandle": customer], key: UUID())
         try linked.validateCustomerAction(requiresDetails: false)
     }
@@ -195,7 +197,8 @@ final class StripeFlowController {
                 let input = try await identity(fields: result.missingFields, prefilled: result.status == "NOT_STARTED")
                 try await sdk { try await $0.attachIdentity(input) }
             case ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
-                try await sdk { try await $0.verifyIdentity(from: self.forms.presenter) }
+                let presenter = try await forms.handOff()
+                try await sdk { try await $0.verifyIdentity(from: presenter) }
             case ("PENDING", "RETRY"):
                 forms.showProgress("Checking your verification")
                 try await pause(); try check()
@@ -209,7 +212,8 @@ final class StripeFlowController {
         var address: StripeAddressInput?
         for _ in 0..<3 {
             let current = address
-            let result = try await sdk { try await $0.confirmIdentity(address: current, from: self.forms.presenter) }
+            let presenter = try await forms.handOff()
+            let result = try await sdk { try await $0.confirmIdentity(address: current, from: presenter) }
             if case .confirmed = result { return }
             address = try await forms.address()
         }
@@ -224,11 +228,11 @@ final class StripeFlowController {
             switch (result.status, result.next) {
             case ("QUOTE_READY", "CONFIRM_PAYMENT"), ("REQUIRES_PAYMENT", "CONFIRM_PAYMENT"):
                 guard let runtime else { throw StripeNativeError.unavailable }
-                forms.showProgress("Confirm your payment")
+                let presenter = try await forms.handOff()
                 var followUp: StripeActionResponse?
                 var authorizationRequired = false
                 do {
-                    try await runtime.checkout(session: expected, from: forms.presenter) { [weak self] requested in
+                    try await runtime.checkout(session: expected, from: presenter) { [weak self] requested in
                         guard let self else { throw StripeNativeError.cancelled }
                         guard followUp == nil, !authorizationRequired else { throw StripeNativeError.actionRequired }
                         let invocation = StripeCheckoutInvocation()
@@ -262,7 +266,8 @@ final class StripeFlowController {
                 return try observe(await action("READ_SUBMISSION").submission())
             case ("REJECTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
                 if result.next == "SDK_VERIFY_IDENTITY" {
-                    try await sdk { try await $0.verifyIdentity(from: self.forms.presenter) }
+                    let presenter = try await forms.handOff()
+                try await sdk { try await $0.verifyIdentity(from: presenter) }
                 } else {
                     let input = try await forms.identity(fields: [])
                     try await sdk { try await $0.attachIdentity(input) }

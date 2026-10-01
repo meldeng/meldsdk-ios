@@ -39,6 +39,16 @@ final class StripeActionResponseTests: XCTestCase {
         XCTAssertNil(try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP"]).prefill)
     }
 
+    func testTypedPhoneNumbersBecomeE164AndOtherFieldsAreOnlyTrimmed() {
+        XCTAssertEqual(StripeFormField.phone.normalized("(415) 555-0123"), "+14155550123")
+        XCTAssertEqual(StripeFormField.phone.normalized("1 415 555 0123"), "+14155550123")
+        XCTAssertEqual(StripeFormField.phone.normalized("+44 20 7946 0958"), "+442079460958")
+        XCTAssertEqual(StripeFormField.phone.normalized("555-0123"), "555-0123")
+        XCTAssertFalse(StripeFormField.phone.valid(StripeFormField.phone.normalized("555-0123")))
+        XCTAssertEqual(StripeFormField.state.normalized(" ca "), "CA")
+        XCTAssertEqual(StripeFormField.email.normalized(" buyer@example.test "), "buyer@example.test")
+    }
+
     func testUnusablePrefillValuesAreDroppedWithoutInvalidatingTheResponse() throws {
         func prefill(_ value: Any) throws -> StripePrefill? {
             try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": value]).prefill

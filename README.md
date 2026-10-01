@@ -303,6 +303,25 @@ Apple Pay or card. An unsupported Stripe descriptor is never sent to the native-
 React Native consumers need a release containing this change and a matching native dependency
 update; an OTA JavaScript update alone cannot change the native resolver.
 
+### Stripe native onramp
+
+The SDK shows nothing of its own until it needs the customer. Keep your own busy state (for example a
+spinner on the button that started the purchase) until a terminal callback, and block anything that would
+unmount the session or start another order meanwhile: between screens nothing of the SDK's covers yours,
+and an unmount reports no outcome. Forms present over your
+top-most view controller, one sheet at a time; a submitted form stays up with a spinner in its button
+until the next form replaces it or a Stripe screen (Link sign-in code, identity verification, Apple Pay,
+checkout) takes over. The customer cancels from any form, busy or not, or from a Stripe screen. That
+delivers `onCancel`, or `onStatusChange(pending)` and `onError(PAYMENT_OUTCOME_UNKNOWN)` when a payment
+may already exist. The SDK dismisses its own screens before any terminal callback, so anything you present
+from one stays up. `unmount()` dismisses whatever the SDK or Stripe presented and delivers no callback.
+
+The server's `READ_SUBMISSION` answer can carry `sdk.prefill`. Its `email` is the one Meld authorizes
+with Link, so the SDK uses it instead of asking. A verified `phone` registers a new Link account
+without a form, and `identity` (name, date of birth, US address) is submitted on Stripe's first KYC
+request, leaving only the fields it does not cover, such as the SSN. If Stripe rejects that submission
+the full form is shown. Without `prefill` the SDK asks for everything, as before.
+
 ### Provider-hosted Apple Pay
 
 Mount a `COINBASE_APPLE_PAY` order the same way as the other Apple Pay protocols: `into:` is

@@ -13,6 +13,7 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(outcome, .pending)
         XCTAssertEqual(h.driver.calls, ["hasAccount", "register", "authorize", "confirmIdentity", "registerWallet", "collectPayment", "createPaymentToken", "checkout"])
         XCTAssertEqual(h.forms.calls, ["email", "registration"])
+        XCTAssertEqual(h.forms.handOffs, 4, "every provider screen first clears the forms")
         XCTAssertTrue(h.store.value.submissionStarted)
         XCTAssertEqual(h.driver.collectedRequest?.merchantIdentifier, "merchant.example.stripe")
         XCTAssertEqual(h.driver.collectedRequest?.currencyCode, "USD")
@@ -410,11 +411,11 @@ final class StripeFlowControllerTests: XCTestCase {
                 onStatusChange: { _ in terminal += 1 }, onCancel: { _ in terminal += 1 }, onError: { _ in terminal += 1 }),
             client: client, store: FlowStore(), factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
         for _ in 0..<100 {
-            if root.presentedViewController?.presentedViewController != nil { break }
+            if root.presentedViewController is UINavigationController { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTAssertEqual(ready, 1)
-        XCTAssertNotNil(root.presentedViewController?.presentedViewController)
+        XCTAssertTrue(root.presentedViewController is UINavigationController, "the first form presents over the host itself")
         session.unmount()
         for _ in 0..<100 {
             if driver.logouts == 1, root.presentedViewController == nil { break }
@@ -449,42 +450,125 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertNil(root.presentedViewController)
     }
 
-    func testCancelBeforeTheSubmissionReadResolvesIsACancelUnlessThisDeviceClaimedAPayment() async throws {
+    func testNothingIsPresentedUntilTheCustomerIsNeededAndCancellingTheFirstFormIsACancel() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let client = FlowClient(), driver = FlowDriver()
+        client.delay = true
+        var cancelled = 0
+        var errors: [String] = []
+        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
+            handlers: MeldEventHandlers(onCancel: { _ in cancelled += 1 }, onError: { errors.append($0.code) }), client: client,
+            store: FlowStore(), factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
+        for _ in 0..<100 {
+            if client.delayed != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNil(root.presentedViewController, "no screen while Meld is still answering")
+        client.delayed?(FlowHarness.bootstrap[0]); client.delayed = nil
+        for _ in 0..<100 {
+            if root.presentedViewController is UINavigationController { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController)
+        let cancel = try XCTUnwrap(navigation.topViewController?.navigationItem.leftBarButtonItem)
+        UIApplication.shared.sendAction(try XCTUnwrap(cancel.action), to: cancel.target, from: nil, for: nil)
+        for _ in 0..<100 {
+            if cancelled == 1, root.presentedViewController == nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(cancelled, 1)
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertNil(root.presentedViewController)
+        XCTAssertFalse(client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+        session.unmount()
+    }
+
+    func testCancellingABusyFormIsACancelUnlessThisDeviceMayHavePaid() async throws {
         UIView.setAnimationsEnabled(false)
         defer { UIView.setAnimationsEnabled(true) }
         let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = root; window.makeKeyAndVisible()
         defer { window.isHidden = true }
         for claimed in [false, true] {
-            let client = FlowClient(), counter = FlowCounter(), driver = FlowDriver(), store = FlowStore()
-            client.delay = true
-            store.value.submissionStarted = claimed
+            let client = FlowClient(), driver = FlowDriver()
+            driver.failAuthentication = claimed
+            client.responses = claimed ? [FlowHarness.resume(), FlowHarness.authToken] : [FlowHarness.bootstrap[0]]
             var cancelled = 0, pending = 0
             var errors: [String] = []
             let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
-                handlers: MeldEventHandlers(onStatusChange: { status in
-                    XCTAssertEqual(status.status, .pending); XCTAssertTrue(errors.isEmpty); pending += 1
-                }, onCancel: { _ in cancelled += 1 }, onError: { errors.append($0.code) }), client: client, store: store,
-                factory: { counter.value += 1; return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
+                handlers: MeldEventHandlers(onStatusChange: { _ in pending += 1 }, onCancel: { _ in cancelled += 1 },
+                                            onError: { errors.append($0.code) }),
+                client: client, store: FlowStore(),
+                factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver } })
+            for _ in 0..<100 {
+                if root.presentedViewController is UINavigationController { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController, "claimed: \(claimed)")
+            let form = try XCTUnwrap(navigation.topViewController)
+            try XCTUnwrap(Self.views(UITextField.self, in: form.view).first).text = "buyer@example.test"
+            client.delay = true
+            try XCTUnwrap(Self.views(UIButton.self, in: form.view).first).sendActions(for: .touchUpInside)
             for _ in 0..<100 {
                 if client.delayed != nil { break }
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
-            let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController)
-            let cancel = try XCTUnwrap(navigation.topViewController?.navigationItem.leftBarButtonItem)
+            XCTAssertTrue(root.presentedViewController === navigation, "the busy form stays up while Meld answers")
+            let cancel = try XCTUnwrap(form.navigationItem.leftBarButtonItem)
             UIApplication.shared.sendAction(try XCTUnwrap(cancel.action), to: cancel.target, from: nil, for: nil)
-            client.delayed?(FlowHarness.bootstrap[0]); client.delayed = nil
             for _ in 0..<100 {
-                if root.presentedViewController == nil { break }
+                if cancelled + errors.count > 0, root.presentedViewController == nil { break }
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
-            XCTAssertEqual(pending, claimed ? 1 : 0, "claimed: \(claimed)")
+            XCTAssertNil(root.presentedViewController, "claimed: \(claimed)")
             XCTAssertEqual(cancelled, claimed ? 0 : 1, "claimed: \(claimed)")
+            XCTAssertEqual(pending, claimed ? 1 : 0, "claimed: \(claimed)")
             XCTAssertEqual(errors, claimed ? ["PAYMENT_OUTCOME_UNKNOWN"] : [], "claimed: \(claimed)")
-            XCTAssertEqual(counter.value, 0)
-            XCTAssertNil(root.presentedViewController)
+            client.delayed?(.failure(PaymentActionError.invalidResponse)); client.delayed = nil
+            try await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertEqual(cancelled + errors.count, 1, "a late flow failure adds no second terminal callback")
             session.unmount()
         }
+    }
+
+    func testWhatTheHostPresentsFromATerminalCallbackStaysUp() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let client = FlowClient(), alert = UIViewController()
+        client.responses = [FlowHarness.bootstrap[0]]
+        var ended = false
+        var handlers = MeldEventHandlers(onCancel: { _ in root.present(alert, animated: false) }).gated()
+        let backstop = handlers.sessionEnded
+        handlers.sessionEnded = { ended = true; backstop?($0) }
+        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil, handlers: handlers,
+            client: client, store: FlowStore(),
+            factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() } })
+        for _ in 0..<100 {
+            if root.presentedViewController is UINavigationController { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let form = try XCTUnwrap((root.presentedViewController as? UINavigationController)?.topViewController)
+        let cancel = try XCTUnwrap(form.navigationItem.leftBarButtonItem)
+        UIApplication.shared.sendAction(try XCTUnwrap(cancel.action), to: cancel.target, from: nil, for: nil)
+        for _ in 0..<100 {
+            if ended { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(ended)
+        XCTAssertTrue(root.presentedViewController === alert, "the SDK cleared its own screens before the callback")
+        root.dismiss(animated: false)
+        session.unmount()
+    }
+
+    private static func views<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
+        view.subviews.flatMap { ($0 as? T).map { [$0] } ?? [] + views(type, in: $0) }
     }
 
     func testEveryOutcomeEndsInOneTerminalEventThatSaysWhetherAPaymentMayExist() {
@@ -569,36 +653,42 @@ final class StripeFlowControllerTests: XCTestCase {
         }
     }
 
-    func testHostPresentingFirstReportsAPresentationFailureAndEndsTheSession() async throws {
+    func testFormsPresentOverTheHostsOwnSheetAndUnmountLeavesThatSheetInPlace() async throws {
         UIView.setAnimationsEnabled(false)
         defer { UIView.setAnimationsEnabled(true) }
         let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = root; window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        let client = FlowClient(), counter = FlowCounter()
-        var events: [String] = []
-        var handlers = MeldEventHandlers(onReady: { _ in events.append("ready") },
-                                         onError: { events.append("error:\($0.code)") }).gated()
-        let backstop = handlers.sessionEnded
-        handlers.sessionEnded = { events.append("ended"); backstop?($0) }
-        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil, handlers: handlers,
-            client: client, store: FlowStore(),
-            factory: { counter.value += 1; return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() } })
         let other = UIViewController()
         root.present(other, animated: false)
         for _ in 0..<100 {
-            if events.contains("ended") { break }
+            if other.viewIfLoaded?.window != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTAssertEqual(events, ["error:PRESENTATION_FAILED", "ended"])
-        XCTAssertTrue(root.presentedViewController === other)
-        XCTAssertTrue(client.calls.isEmpty)
-        XCTAssertEqual(counter.value, 0)
-        root.dismiss(animated: false)
+        let client = FlowClient()
+        client.responses = [FlowHarness.bootstrap[0]]
+        var events: [String] = []
+        let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
+            handlers: MeldEventHandlers(onReady: { _ in events.append("ready") }, onError: { events.append("error:\($0.code)") }),
+            client: client, store: FlowStore(),
+            factory: { try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() } })
+        for _ in 0..<100 {
+            if other.presentedViewController is UINavigationController { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(events, ["ready"])
+        XCTAssertTrue(other.presentedViewController is UINavigationController)
         session.unmount()
+        for _ in 0..<100 {
+            if other.presentedViewController == nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNil(other.presentedViewController)
+        XCTAssertTrue(root.presentedViewController === other)
+        root.dismiss(animated: false)
     }
 
-    func testUnmountDismissesProviderSheetsWithTheProgressSheetAndAlwaysReleasesTheSdk() async throws {
+    func testUnmountDismissesProviderSheetsAndAlwaysReleasesTheSdk() async throws {
         UIView.setAnimationsEnabled(false)
         defer { UIView.setAnimationsEnabled(true) }
         let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
@@ -613,17 +703,17 @@ final class StripeFlowControllerTests: XCTestCase {
                     let sheet = FlowProviderSheet()
                     if reportsDismissal { sheet.onDisappear = { continuation.resume(throwing: StripeNativeError.cancelled) } }
                     else { pending = continuation }
-                    root.presentedViewController?.present(sheet, animated: false)
+                    root.present(sheet, animated: false)
                 }
             }
             let session = try StripePaymentSession(order: FlowHarness.order(), host: root.view, request: nil,
                 handlers: MeldEventHandlers(), client: client, store: FlowStore(),
                 factory: { try await StripeSdkRuntime.open(ownership: ownership, abandonAfter: 0.5) { driver } })
             for _ in 0..<100 {
-                if root.presentedViewController?.presentedViewController is FlowProviderSheet { break }
+                if root.presentedViewController is FlowProviderSheet { break }
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
-            XCTAssertTrue(root.presentedViewController?.presentedViewController is FlowProviderSheet)
+            XCTAssertTrue(root.presentedViewController is FlowProviderSheet)
             session.unmount()
             for _ in 0..<100 {
                 if root.presentedViewController == nil, driver.logouts == (reportsDismissal ? 1 : 0) { break }
@@ -787,6 +877,8 @@ private final class FlowStore: WalletAttemptStoring {
 private final class FlowForms: StripeFlowPresenting {
     let presenter = UIViewController()
     var calls: [String] = []
+    var handOffs = 0
+    func handOff() async throws -> UIViewController { handOffs += 1; return presenter }
     var identityRequests: [[String]] = []
     func email() async throws -> String { calls.append("email"); return "customer@example.test" }
     func registration() async throws -> StripeRegistrationInput { calls.append("registration"); return StripeRegistrationInput(name: nil, phone: "+12025550123") }
