@@ -19,6 +19,47 @@ final class StripeActionResponseTests: XCTestCase {
             .validateCustomerAction(requiresDetails: false))
     }
 
+    func testSubmissionReadCarriesAWellFormedPrefill() throws {
+        let read = try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": [
+            "email": "buyer@example.test", "phone": "+14155550123", "fullName": "Ada Lovelace",
+            "identity": ["firstName": "Ada", "lastName": "Lovelace", "dateOfBirth": "1990-03-15",
+                         "address": ["line1": "1 Market St", "city": "San Francisco", "state": "ca", "postalCode": "94105", "country": "US"]]]])
+        XCTAssertEqual(try read.submission(), .notStarted(.bootstrap))
+        let prefill = try XCTUnwrap(read.prefill)
+        XCTAssertEqual(prefill.email, "buyer@example.test")
+        XCTAssertEqual(prefill.phone, "+14155550123")
+        XCTAssertEqual(prefill.fullName, "Ada Lovelace")
+        XCTAssertEqual(prefill.identity?.firstName, "Ada")
+        XCTAssertEqual(prefill.identity?.birthYear, 1990)
+        XCTAssertEqual(prefill.identity?.address?.state, "CA")
+        XCTAssertNil(prefill.identity?.idNumber)
+        XCTAssertFalse(String(describing: prefill).contains("Ada"))
+        let emailOnly = try XCTUnwrap(try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": ["email": "buyer@example.test"]]).prefill)
+        XCTAssertNil(emailOnly.phone); XCTAssertNil(emailOnly.identity)
+        XCTAssertNil(try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP"]).prefill)
+    }
+
+    func testUnusablePrefillValuesAreDroppedWithoutInvalidatingTheResponse() throws {
+        func prefill(_ value: Any) throws -> StripePrefill? {
+            try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": value]).prefill
+        }
+        let address: [String: Any] = ["line1": "1 Market St", "city": "San Francisco", "state": "CA", "postalCode": "94105", "country": "US"]
+        for unusable: Any in ["buyer@example.test", ["phone": "+14155550123"], ["email": "not-an-email"]] {
+            XCTAssertNil(try prefill(unusable), "without a usable email the forms ask for everything")
+        }
+        let base: [String: Any] = ["email": "buyer@example.test"]
+        XCTAssertNil(try prefill(base.merging(["phone": "4155550123"]) { $1 })?.phone)
+        XCTAssertNil(try prefill(base.merging(["fullName": String(repeating: "A", count: 300)]) { $1 })?.fullName)
+        XCTAssertNil(try prefill(base.merging(["identity": "Ada"]) { $1 })?.identity)
+        let badDate = try XCTUnwrap(try prefill(base.merging(["identity": ["firstName": "Ada", "dateOfBirth": "15/03/1990"]]) { $1 })?.identity)
+        XCTAssertEqual(badDate.firstName, "Ada"); XCTAssertNil(badDate.birthYear)
+        for broken in [address.merging(["country": "GB"]) { $1 }, address.merging(["postalCode": "9410"]) { $1 },
+                       address.merging(["city": "San\nFrancisco"]) { $1 }, address.merging(["line2": 7]) { $1 }] {
+            let identity = try XCTUnwrap(try prefill(base.merging(["identity": ["lastName": "Lovelace", "address": broken]]) { $1 })?.identity)
+            XCTAssertNil(identity.address); XCTAssertEqual(identity.lastName, "Lovelace")
+        }
+    }
+
     func testReadProjectionNeverConfusesProgressOrUnknownWithAReusableAttempt() throws {
         let rows: [(String, String, StripeActionResponse.Submission)] = [
             ("IN_PROGRESS", "WAIT_FOR_PROVIDER", .inProgress),

@@ -43,6 +43,8 @@ final class StripeFlowController {
     private var runtime: StripeSdkRuntime?
     private var financialStarted = false
     private var session: String?
+    private var prefill: StripePrefill?
+    private var identityPrefillUsed = false
     private var started = false
     var mayHaveFinancialAttempt: Bool { financialStarted || ((try? store.record())?.submissionStarted ?? true) }
 
@@ -58,7 +60,9 @@ final class StripeFlowController {
     func run() async throws -> Outcome {
         guard !started else { throw StripeNativeError.busy }
         started = true
-        let submission = try await action("READ_SUBMISSION").submission()
+        let read = try await action("READ_SUBMISSION")
+        let submission = try read.submission()
+        prefill = read.prefill
         let authentication: StripeActionResponse.Authentication
         switch submission {
         case .notStarted(let auth):
@@ -115,20 +119,17 @@ final class StripeFlowController {
                 // Expired Meld bearers will also reject preparation; they cannot be renewed here.
             }
         }
-        let email = try await forms.email()
+        let email: String
+        if let known = prefill?.email { email = known } else { email = try await forms.email() }
         try check()
         let hasAccount = try await sdk { try await $0.hasAccount(email: email) }
-        if !hasAccount {
-            let registration = try await forms.registration()
-            try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
-        }
+        if !hasAccount { try await register(email: email) }
         // Preparation also reuses initial consent; its expiry is independent of the bearer lifetime.
         var prepared = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID())
         if try prepared.requiresRegistration() {
             guard hasAccount, state == .bootstrap, order.flow == "REGISTER", session == nil,
                   !financialStarted else { throw StripeNativeError.invalidResponse }
-            let registration = try await forms.registration()
-            try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
+            try await register(email: email)
             prepared = try await action("PREPARE_CUSTOMER_AUTHORIZATION", key: UUID())
         }
         let intent = try prepared.authorizationIntent(now: now())
@@ -136,6 +137,52 @@ final class StripeFlowController {
         let linked = try await action("COMPLETE_CUSTOMER_LINK", fields: ["customerHandle": customer], key: UUID())
         try linked.validateCustomerAction(requiresDetails: false)
     }
+
+    /// A verified phone registers without a form; if Stripe refuses it, the customer enters one instead.
+    private func register(email: String) async throws {
+        if let phone = prefill?.phone {
+            do {
+                try await sdk { try await $0.register(email: email, name: self.prefill?.fullName, phone: phone, country: "US") }
+                return
+            } catch StripeNativeError.cancelled {
+                throw StripeNativeError.cancelled
+            } catch {
+                try check()
+            }
+        }
+        let registration = try await forms.registration()
+        try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
+    }
+
+    /// Stripe rejecting a prefilled submission falls back to the form, so the same values are never resent.
+    private func identity(fields: [String], prefilled: Bool) async throws -> StripeIdentityInput {
+        guard prefilled, !identityPrefillUsed, let known = prefill?.identity else {
+            // After a rejected prefill, ask for everything: Stripe may not list the prefilled fields as missing.
+            return try await forms.identity(fields: identityPrefillUsed ? [] : fields)
+        }
+        identityPrefillUsed = true
+        let wanted = fields.isEmpty ? Self.identityFields : fields
+        let covered: (String) -> Bool = {
+            switch $0 {
+            case "FIRST_NAME": return known.firstName != nil
+            case "LAST_NAME": return known.lastName != nil
+            case "DATE_OF_BIRTH": return known.birthYear != nil
+            default: return $0.hasPrefix("ADDRESS_") && known.address != nil
+            }
+        }
+        let remaining = wanted.filter { !covered($0) }
+        var input = remaining.isEmpty ? StripeIdentityInput() : try await forms.identity(fields: remaining)
+        if wanted.contains("FIRST_NAME"), covered("FIRST_NAME") { input.firstName = known.firstName }
+        if wanted.contains("LAST_NAME"), covered("LAST_NAME") { input.lastName = known.lastName }
+        if wanted.contains("DATE_OF_BIRTH"), covered("DATE_OF_BIRTH") {
+            input.birthDay = known.birthDay; input.birthMonth = known.birthMonth; input.birthYear = known.birthYear
+        }
+        if wanted.contains(where: { $0.hasPrefix("ADDRESS_") }), known.address != nil { input.address = known.address }
+        return input
+    }
+
+    private static let identityFields = ["FIRST_NAME", "LAST_NAME", "DATE_OF_BIRTH", "ID_NUMBER", "ADDRESS_LINE_1",
+                                         "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
 
     private func verifyCustomer() async throws -> Bool {
         for _ in 0..<12 {
@@ -145,7 +192,7 @@ final class StripeFlowController {
             case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"):
                 return true
             case ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"):
-                let input = try await forms.identity(fields: result.missingFields)
+                let input = try await identity(fields: result.missingFields, prefilled: result.status == "NOT_STARTED")
                 try await sdk { try await $0.attachIdentity(input) }
             case ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
                 try await sdk { try await $0.verifyIdentity(from: self.forms.presenter) }

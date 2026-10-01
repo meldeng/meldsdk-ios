@@ -22,6 +22,100 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(h.driver.logouts, 1)
     }
 
+    func testServerEmailReplacesTheEmailFormForLookupAndRegistration() async throws {
+        let h = try FlowHarness(registration: true)
+        h.driver.hasAccountResult = false
+        h.client.responses = [FlowHarness.bootstrap(prefill: ["email": "buyer@example.test"])] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.calls, ["registration"])
+        XCTAssertEqual(h.driver.emails, ["buyer@example.test", "buyer@example.test"])
+        await h.flow.close()
+    }
+
+    func testVerifiedPhoneRegistersLinkWithoutAnyForm() async throws {
+        let h = try FlowHarness(registration: true)
+        h.driver.hasAccountResult = false
+        h.client.responses = [FlowHarness.bootstrap(prefill: ["email": "buyer@example.test", "phone": "+14155550123", "fullName": "Ada Lovelace"])] +
+            Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.calls.isEmpty)
+        XCTAssertEqual(h.driver.registrations, ["Ada Lovelace +14155550123"])
+        await h.flow.close()
+    }
+
+    func testARefusedPrefilledPhoneFallsBackToTheRegistrationForm() async throws {
+        let h = try FlowHarness(registration: true)
+        h.driver.hasAccountResult = false
+        h.driver.failRegistrations = 1
+        h.client.responses = [FlowHarness.bootstrap(prefill: ["email": "buyer@example.test", "phone": "+14155550123"])] +
+            Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.calls, ["registration"])
+        XCTAssertEqual(h.driver.registrations, ["- +14155550123", "- +12025550123"])
+        await h.flow.close()
+    }
+
+    func testAnUnusablePrefillFallsBackToEveryForm() async throws {
+        let h = try FlowHarness(registration: true)
+        h.driver.hasAccountResult = false
+        h.client.responses = [FlowHarness.bootstrap(prefill: ["email": "not-an-email", "phone": "+14155550123"])] +
+            Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.calls, ["email", "registration"])
+        await h.flow.close()
+    }
+
+    func testSumsubIdentityIsSubmittedAndOnlyTheIdNumberIsAsked() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: FlowHarness.allIdentityFields),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"]])
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertEqual(attached.lastName, "Lovelace")
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertEqual(attached.birthMonth, 3); XCTAssertEqual(attached.birthDay, 15)
+        XCTAssertEqual(attached.address?.line1, "1 Market St")
+        XCTAssertEqual(attached.idNumber, "000000000")
+        await h.flow.close()
+    }
+
+    func testFullyCoveredIdentityIsSubmittedWithoutAForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: ["FIRST_NAME", "DATE_OF_BIRTH", "ADDRESS_CITY"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertNil(attached.lastName)
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertNotNil(attached.address)
+        await h.flow.close()
+    }
+
+    func testRejectedPrefilledIdentityFallsBackToTheFullForm() async throws {
+        let h = try FlowHarness()
+        let missing = FlowHarness.allIdentityFields
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"], []], "after a rejection the customer sees every field")
+        XCTAssertEqual(h.driver.attached.count, 2)
+        XCTAssertNil(h.driver.attached.last?.firstName)
+        await h.flow.close()
+    }
+
     func testRegistrationNextStepRecoversAccountCheckDisagreementOnSameOrder() async throws {
         let h = try FlowHarness(registration: true)
         h.client.responses = [FlowHarness.bootstrap[0], FlowHarness.read("NOT_STARTED", "SDK_REGISTER_CUSTOMER")] +
@@ -610,6 +704,14 @@ private final class FlowHarness {
         .success(["version": 1, "status": "READY", "nextStep": "SDK_AUTHORIZE", "sdk": ["authenticationState": "REAUTHORIZE", "authorizationHandle": "lai_synthetic", "expiresAt": "2030-01-01T00:00:00Z"]]),
         .success(["version": 1, "status": "VERIFIED", "nextStep": "CREATE_PAYMENT_SESSION"])
     ]
+    static func bootstrap(prefill: [String: Any]) -> Result<[String: Any], Error> {
+        .success(["version": 1, "status": "NOT_STARTED", "nextStep": "NONE", "sdk": ["authenticationState": "BOOTSTRAP", "prefill": prefill]])
+    }
+    static let sumsubPrefill: [String: Any] = ["email": "buyer@example.test", "identity": [
+        "firstName": "Ada", "lastName": "Lovelace", "dateOfBirth": "1990-03-15",
+        "address": ["line1": "1 Market St", "city": "San Francisco", "state": "CA", "postalCode": "94105", "country": "US"]]]
+    static let allIdentityFields = ["FIRST_NAME", "LAST_NAME", "DATE_OF_BIRTH", "ID_NUMBER", "ADDRESS_LINE_1",
+                                    "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
     static let authToken: Result<[String: Any], Error> = .success(["version": 1, "status": "READY", "nextStep": "SDK_AUTHORIZE", "sdk": ["clientSecret": "latcs_synthetic", "expiresAt": "2030-01-01T00:00:00Z"]])
     static func read(_ status: String, _ next: String) -> Result<[String: Any], Error> {
         .success(["version": 1, "status": status, "nextStep": next])
@@ -617,8 +719,8 @@ private final class FlowHarness {
     static func resume() -> Result<[String: Any], Error> {
         .success(["version": 1, "status": "READY", "nextStep": "REFRESH_QUOTE", "sdk": ["authenticationState": "RESTORE", "sessionHandle": "cos_synthetic"]])
     }
-    static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION") -> Result<[String: Any], Error> {
-        .success(["version": 1, "status": status, "nextStep": next, "customer": ["missingFields": [], "highestVerifiedTier": "L1", "tiers": []]])
+    static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = []) -> Result<[String: Any], Error> {
+        .success(["version": 1, "status": status, "nextStep": next, "customer": ["missingFields": missing, "highestVerifiedTier": "L1", "tiers": []]])
     }
     static func payment(_ status: String = "REQUIRES_PAYMENT", next: String = "CONFIRM_PAYMENT", secret: Bool = true) -> Result<[String: Any], Error> {
         var sdk = ["sessionHandle": "cos_synthetic"]
@@ -685,9 +787,14 @@ private final class FlowStore: WalletAttemptStoring {
 private final class FlowForms: StripeFlowPresenting {
     let presenter = UIViewController()
     var calls: [String] = []
+    var identityRequests: [[String]] = []
     func email() async throws -> String { calls.append("email"); return "customer@example.test" }
     func registration() async throws -> StripeRegistrationInput { calls.append("registration"); return StripeRegistrationInput(name: nil, phone: "+12025550123") }
-    func identity(fields: [String]) async throws -> StripeIdentityInput { calls.append("identity"); return StripeIdentityInput() }
+    func identity(fields: [String]) async throws -> StripeIdentityInput {
+        calls.append("identity"); identityRequests.append(fields)
+        var input = StripeIdentityInput(); if fields.contains("ID_NUMBER") { input.idNumber = "000000000" }
+        return input
+    }
     func address() async throws -> StripeAddressInput { calls.append("address"); return StripeAddressInput(line1: "Synthetic", line2: nil, city: "Synthetic", state: "CA", postalCode: "00000", country: "US") }
     func showProgress(_ message: String) {}
     func close() {}
@@ -695,6 +802,10 @@ private final class FlowForms: StripeFlowPresenting {
 @MainActor
 private final class FlowDriver: StripeSdkDriving {
     var calls: [String] = []
+    var emails: [String] = []
+    var registrations: [String] = []
+    var failRegistrations = 0
+    var attached: [StripeIdentityInput] = []
     var hasAccountResult = true, failAuthentication = false, updateAddress = false, cancelCollection = false
     var checkoutCallbacks = 1, logouts = 0
     var callbackSession: String?
@@ -703,14 +814,19 @@ private final class FlowDriver: StripeSdkDriving {
     var onToken: (() -> Void)?
     var onAuthenticate: (() async throws -> Void)?
     var collectedRequest: PKPaymentRequest?
-    func hasAccount(email: String) async throws -> Bool { calls.append("hasAccount"); onHasAccount?(); return hasAccountResult }
-    func register(email: String, name: String?, phone: String, country: String) async throws { calls.append("register") }
+    func hasAccount(email: String) async throws -> Bool {
+        calls.append("hasAccount"); emails.append(email); onHasAccount?(); return hasAccountResult
+    }
+    func register(email: String, name: String?, phone: String, country: String) async throws {
+        calls.append("register"); emails.append(email); registrations.append("\(name ?? "-") \(phone)")
+        if failRegistrations > 0 { failRegistrations -= 1; throw StripeNativeError.invalidResponse }
+    }
     func authorize(intent: String, from presenter: UIViewController) async throws -> String { calls.append("authorize"); return "crc_synthetic" }
     func authenticate(secret: String) async throws {
         calls.append("authenticate"); try await onAuthenticate?()
         if failAuthentication { throw StripeNativeError.authorizationRequired }
     }
-    func attachIdentity(_ input: StripeIdentityInput) async throws { calls.append("attachIdentity") }
+    func attachIdentity(_ input: StripeIdentityInput) async throws { calls.append("attachIdentity"); attached.append(input) }
     func verifyIdentity(from presenter: UIViewController) async throws { calls.append("verifyIdentity") }
     func confirmIdentity(address: StripeAddressInput?, from presenter: UIViewController) async throws -> StripeKycConfirmation {
         calls.append("confirmIdentity"); if updateAddress { updateAddress = false; return .updateAddress }; return .confirmed

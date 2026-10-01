@@ -11,6 +11,7 @@ struct StripeActionResponse: CustomStringConvertible {
     private let secret: String?
     private let expiresAt: Date?
     let missingFields: [String]
+    let prefill: StripePrefill?
     private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
 
@@ -44,7 +45,8 @@ struct StripeActionResponse: CustomStringConvertible {
                 guard let raw = raw as? String, let date = Self.date(raw) else { throw StripeNativeError.invalidResponse }
                 expiresAt = date
             } else { expiresAt = nil }
-        } else { session = nil; secret = nil; expiresAt = nil; authentication = nil; intent = nil }
+            prefill = sdk["prefill"].flatMap { StripePrefill($0) }
+        } else { session = nil; secret = nil; expiresAt = nil; authentication = nil; intent = nil; prefill = nil }
         if let raw = value["customer"] {
             guard let customer = raw as? [String: Any], let fields = customer["missingFields"] as? [String],
                   fields.allSatisfy(Self.fields.contains), Set(fields).count == fields.count
