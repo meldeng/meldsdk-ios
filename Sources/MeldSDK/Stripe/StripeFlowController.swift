@@ -87,8 +87,14 @@ final class StripeFlowController {
                 let token = try await sdk { try await $0.createPaymentToken() }
                 let key = try store.claimSubmission()
                 financialStarted = true
-                let result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key)
-                guard let created = result.session else { throw StripeNativeError.invalidResponse }
+                let result: StripeActionResponse
+                do {
+                    result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key)
+                } catch PaymentActionError.action(.providerRejected) { return .rejected }
+                guard let created = result.session else {
+                    guard result.status == "FAILED", result.next == "START_NEW_ORDER" else { throw StripeNativeError.invalidResponse }
+                    return .rejected
+                }
                 session = created
                 return try await continueSession(result)
             }

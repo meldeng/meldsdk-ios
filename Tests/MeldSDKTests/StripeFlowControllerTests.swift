@@ -234,6 +234,39 @@ final class StripeFlowControllerTests: XCTestCase {
         }
     }
 
+    func testRefusedSessionCreateIsARejectionButEveryOtherFailureAfterTheClaimStaysUnknown() async throws {
+        let refused: [Result<[String: Any], Error>] = [.failure(PaymentActionError.action(.providerRejected)),
+                                                       FlowHarness.read("FAILED", "START_NEW_ORDER")]
+        for response in refused {
+            let h = try FlowHarness()
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), response]
+            let outcome = try await h.flow.run()
+            XCTAssertEqual(outcome, .rejected)
+            XCTAssertTrue(h.store.value.submissionStarted)
+            XCTAssertFalse(h.driver.calls.contains("checkout"))
+            XCTAssertEqual(h.client.calls.last?.operation, "CREATE_PAYMENT_SESSION")
+            await h.flow.close()
+        }
+        let unknown: [(String, [Result<[String: Any], Error>])] = [
+            ("create transport", [.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)]),
+            ("create invalid provider response", [.failure(PaymentActionError.action(.invalidProviderResponse))]),
+            ("create outcome unknown", [.failure(PaymentActionError.action(.outcomeUnknown))]),
+            ("create failed without new order", [FlowHarness.read("FAILED", "NONE")]),
+            ("create without session", [FlowHarness.read("REQUIRES_PAYMENT", "CONFIRM_PAYMENT")]),
+            ("checkout refused", [FlowHarness.payment(), .failure(PaymentActionError.action(.providerRejected))]),
+            ("refresh refused", [FlowHarness.payment("REQUIRES_PAYMENT", next: "REFRESH_QUOTE", secret: false),
+                                 .failure(PaymentActionError.action(.providerRejected))])]
+        for (name, responses) in unknown {
+            let h = try FlowHarness()
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()] + responses
+            do { _ = try await h.flow.run(); XCTFail("\(name): expected a failure") } catch {
+                XCTAssertEqual(StripePaymentSession.failure(error, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt,
+                                                            orderId: "synthetic-order").code, "PAYMENT_OUTCOME_UNKNOWN", name)
+            }
+            await h.flow.close()
+        }
+    }
+
     func testFailureBeforeTheFirstReadMayHaveAPaymentOnlyWhenThisDeviceClaimedOneOrCannotTell() async throws {
         for (claimed, unreadable, expected) in [(false, false, false), (true, false, true), (false, true, true)] {
             let h = try FlowHarness()
