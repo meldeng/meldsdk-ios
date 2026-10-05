@@ -88,9 +88,10 @@ final class StripeFlowController {
                 let key = try store.claimSubmission()
                 financialStarted = true
                 let result: StripeActionResponse
+                var retried = false
                 do {
-                    result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key)
-                } catch PaymentActionError.action(.providerRejected) { return .rejected }
+                    result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key, retried: &retried)
+                } catch PaymentActionError.action(.providerRejected) where !retried { return .rejected }
                 guard let created = result.session else {
                     guard result.status == "FAILED", result.next == "START_NEW_ORDER" else { throw StripeNativeError.invalidResponse }
                     return .rejected
@@ -317,6 +318,12 @@ final class StripeFlowController {
     }
 
     private func action(_ operation: String, fields: [String: Any] = [:], key: UUID? = nil) async throws -> StripeActionResponse {
+        var retried = false
+        return try await action(operation, fields: fields, key: key, retried: &retried)
+    }
+
+    private func action(_ operation: String, fields: [String: Any], key: UUID?,
+                        retried: inout Bool) async throws -> StripeActionResponse {
         // Retry only a transport failure, once, with the identical body and mutation identity.
         for attempt in 0..<2 {
             try check()
@@ -326,7 +333,7 @@ final class StripeFlowController {
                 }
                 try check()
                 return try StripeActionResponse(json)
-            } catch PaymentActionError.transport where attempt == 0 { continue }
+            } catch PaymentActionError.transport where attempt == 0 { retried = true; continue }
         }
         throw PaymentActionError.transport
     }
