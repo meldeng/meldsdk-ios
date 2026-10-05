@@ -407,7 +407,11 @@ device has claimed the order's submission, or the server has reported an existin
 submission. An unresolved payment emits `pending`, then `onError(PAYMENT_OUTCOME_UNKNOWN)`; so do
 pending verification and Cancel once a payment may have been attempted. Before that, Cancel reports
 `onCancel` and pending verification reports `onError(VERIFICATION_PENDING)`. A declined or expired
-submission reports `onError(PAYMENT_REJECTED)`. Any other failure reports `PAYMENT_OUTCOME_UNKNOWN`
+submission reports `onError(PAYMENT_REJECTED)`. So does a session create that Meld refuses, although
+the device has claimed the submission: `detail` is `create:PROVIDER_REJECTED` for a 422
+`PROVIDER_REJECTED` answer to the first attempt, and `create:START_NEW_ORDER` for a `FAILED` answer
+with no session whose next step is `START_NEW_ORDER`. A `PROVIDER_REJECTED` that answers the transport
+retry reports `PAYMENT_OUTCOME_UNKNOWN`. Any other failure reports `PAYMENT_OUTCOME_UNKNOWN`
 when a payment may have been attempted, and `PRESENTATION_FAILED` otherwise. Native SDK completion
 alone does not emit a completed order. Track that existing order through your backend. Unmount
 dismisses the SDK's sheet and anything Stripe presented over it, suppresses late events and clears SDK
