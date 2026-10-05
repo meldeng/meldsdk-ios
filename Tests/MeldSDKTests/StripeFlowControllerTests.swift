@@ -235,11 +235,12 @@ final class StripeFlowControllerTests: XCTestCase {
     }
 
     func testRefusedSessionCreateIsARejectionButEveryOtherFailureAfterTheClaimStaysUnknown() async throws {
-        let refused: [Result<[String: Any], Error>] = [.failure(PaymentActionError.action(.providerRejected)),
-                                                       FlowHarness.read("FAILED", "START_NEW_ORDER")]
-        for response in refused {
+        let refused: [[Result<[String: Any], Error>]] = [[.failure(PaymentActionError.action(.providerRejected))],
+                                                         [FlowHarness.read("FAILED", "START_NEW_ORDER")],
+                                                         [.failure(PaymentActionError.transport), FlowHarness.read("FAILED", "START_NEW_ORDER")]]
+        for responses in refused {
             let h = try FlowHarness()
-            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), response]
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()] + responses
             let outcome = try await h.flow.run()
             XCTAssertEqual(outcome, .rejected)
             XCTAssertTrue(h.store.value.submissionStarted)
@@ -249,6 +250,8 @@ final class StripeFlowControllerTests: XCTestCase {
         }
         let unknown: [(String, [Result<[String: Any], Error>])] = [
             ("create transport", [.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)]),
+            ("create refused on the transport retry", [.failure(PaymentActionError.transport),
+                                                      .failure(PaymentActionError.action(.providerRejected))]),
             ("create invalid provider response", [.failure(PaymentActionError.action(.invalidProviderResponse))]),
             ("create outcome unknown", [.failure(PaymentActionError.action(.outcomeUnknown))]),
             ("create failed without new order", [FlowHarness.read("FAILED", "NONE")]),
