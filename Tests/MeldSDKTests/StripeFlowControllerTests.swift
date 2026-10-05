@@ -271,6 +271,34 @@ final class StripeFlowControllerTests: XCTestCase {
         }
     }
 
+    func testA422ProviderRejectedBodyIsARejectionOnlyWhenItAnswersTheFirstCreateAttempt() async throws {
+        let rejected = FlowWire.Reply.http(422, ["version": 1, "code": "PROVIDER_REJECTED"])
+        for (create, code, detail) in [([rejected], "PAYMENT_REJECTED", "create:PROVIDER_REJECTED"),
+                                       ([FlowWire.Reply.lost, rejected], "PAYMENT_OUTCOME_UNKNOWN", "action:PROVIDER_REJECTED")] {
+            let wire = URLSessionConfiguration.ephemeral
+            wire.protocolClasses = [FlowWire.self]
+            let h = try FlowHarness(wire: wire)
+            FlowWire.sent = []
+            FlowWire.replies = try (FlowHarness.bootstrap + [FlowHarness.customer()]).map { FlowWire.Reply.http(200, try $0.get()) } + create
+            let reported: MeldError?
+            do {
+                reported = StripePaymentSession.events(for: try await h.flow.run(), mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt,
+                                                    orderId: "synthetic-order").compactMap { if case let .error(e) = $0 { return e }; return nil }.first
+            } catch {
+                reported = StripePaymentSession.failure(error, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
+            }
+            XCTAssertEqual(reported?.code, code)
+            XCTAssertEqual(reported?.detail, detail)
+            let creates = FlowWire.sent.filter { $0.operation == "CREATE_PAYMENT_SESSION" }
+            XCTAssertEqual(creates.count, create.count)
+            XCTAssertEqual(creates.map(\.key), Array(repeating: h.store.value.submissionKey.uuidString.lowercased(), count: create.count))
+            XCTAssertEqual(FlowWire.sent.last?.operation, "CREATE_PAYMENT_SESSION")
+            XCTAssertTrue(FlowWire.replies.isEmpty)
+            XCTAssertFalse(h.driver.calls.contains("checkout"))
+            await h.flow.close()
+        }
+    }
+
     func testFailureBeforeTheFirstReadMayHaveAPaymentOnlyWhenThisDeviceClaimedOneOrCannotTell() async throws {
         for (claimed, unreadable, expected) in [(false, false, false), (true, false, true), (false, true, true)] {
             let h = try FlowHarness()
@@ -817,12 +845,15 @@ private final class FlowHarness {
     let lifetime = StripeFlowLifetime(), factory = FlowCounter()
     let store: FlowStore
     let flow: StripeFlowController
-    init(applePay: Bool = false, registration: Bool = false, store: FlowStore = FlowStore()) throws {
+    init(applePay: Bool = false, registration: Bool = false, store: FlowStore = FlowStore(),
+         wire: URLSessionConfiguration? = nil) throws {
         self.store = store
         let order = try Self.order(applePay: applePay, registration: registration)
         let counter = factory, driver = driver
         let request = applePay ? try order.paymentRequest() : nil
-        flow = StripeFlowController(order: order, client: client, store: store, forms: forms, lifetime: lifetime, request: request,
+        let transport: PaymentActionSending
+        if let wire { transport = PaymentActionClient(descriptor: order.actions, configuration: wire) } else { transport = client }
+        flow = StripeFlowController(order: order, client: transport, store: store, forms: forms, lifetime: lifetime, request: request,
                                    factory: {
             counter.value += 1
             return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver }
@@ -874,6 +905,32 @@ private final class FlowHarness {
 }
 
 private final class FlowCounter { var value = 0 }
+private final class FlowWire: URLProtocol {
+    enum Reply { case http(Int, [String: Any]), lost }
+    struct Sent { let operation: String?; let key: String? }
+    static var replies: [Reply] = []
+    static var sent: [Sent] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let body = request.httpBody ?? request.httpBodyStream.map { stream in
+            stream.open(); defer { stream.close() }
+            var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+            while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 { data.append(buffer, count: count) }
+            return data
+        }
+        let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        Self.sent.append(Sent(operation: json?["operation"] as? String, key: request.value(forHTTPHeaderField: "X-Idempotency-Key")))
+        guard !Self.replies.isEmpty, case let .http(status, reply) = Self.replies.removeFirst() else {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: reply))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
 private final class FlowProviderSheet: UIViewController {
     var onDisappear: (() -> Void)?
     override func viewDidDisappear(_ animated: Bool) {
