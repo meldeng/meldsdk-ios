@@ -235,14 +235,15 @@ final class StripeFlowControllerTests: XCTestCase {
     }
 
     func testRefusedSessionCreateIsARejectionButEveryOtherFailureAfterTheClaimStaysUnknown() async throws {
-        let refused: [[Result<[String: Any], Error>]] = [[.failure(PaymentActionError.action(.providerRejected))],
-                                                         [FlowHarness.read("FAILED", "START_NEW_ORDER")],
-                                                         [.failure(PaymentActionError.transport), FlowHarness.read("FAILED", "START_NEW_ORDER")]]
-        for responses in refused {
+        let refused: [([Result<[String: Any], Error>], StripeFlowController.Refusal)] = [
+            ([.failure(PaymentActionError.action(.providerRejected))], .providerRejected),
+            ([FlowHarness.read("FAILED", "START_NEW_ORDER")], .startNewOrder),
+            ([.failure(PaymentActionError.transport), FlowHarness.read("FAILED", "START_NEW_ORDER")], .startNewOrder)]
+        for (responses, refusal) in refused {
             let h = try FlowHarness()
             h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()] + responses
             let outcome = try await h.flow.run()
-            XCTAssertEqual(outcome, .rejected)
+            XCTAssertEqual(outcome, .refused(refusal))
             XCTAssertTrue(h.store.value.submissionStarted)
             XCTAssertFalse(h.driver.calls.contains("checkout"))
             XCTAssertEqual(h.client.calls.last?.operation, "CREATE_PAYMENT_SESSION")
@@ -626,11 +627,13 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(names(.completed, attempt: true), ["status:completed"])
         XCTAssertEqual(names(.cancelled, attempt: false), ["cancel"])
         XCTAssertEqual(names(.rejected, attempt: true), ["error:PAYMENT_REJECTED"])
+        XCTAssertEqual(names(.refused(.providerRejected), attempt: true), ["error:PAYMENT_REJECTED"])
+        XCTAssertEqual(names(.refused(.startNewOrder), attempt: true), ["error:PAYMENT_REJECTED"])
         XCTAssertEqual(names(.expired, attempt: true), ["error:PAYMENT_REJECTED"])
-        let details = [StripeFlowController.Outcome.rejected, .expired].flatMap {
+        let details = [StripeFlowController.Outcome.rejected, .refused(.providerRejected), .refused(.startNewOrder), .expired].flatMap {
             StripePaymentSession.events(for: $0, mayHaveFinancialAttempt: true, orderId: "synthetic-order")
         }.compactMap { event -> String? in if case let .error(error) = event { return error.detail }; return nil }
-        XCTAssertEqual(details, ["submission:FAILED", "submission:EXPIRED"])
+        XCTAssertEqual(details, ["submission:FAILED", "create:PROVIDER_REJECTED", "create:START_NEW_ORDER", "submission:EXPIRED"])
     }
 
     func testFailureCodeSaysWhetherAPaymentMayExistAndKeepsOnlyTheErrorIdentity() {

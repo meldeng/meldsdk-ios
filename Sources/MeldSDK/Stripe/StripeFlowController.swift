@@ -31,7 +31,8 @@ final class StripeFlowLifetime: @unchecked Sendable {
 
 @MainActor
 final class StripeFlowController {
-    enum Outcome { case completed, submitted, pending, verificationPending, cancelled, rejected, expired }
+    enum Outcome: Equatable { case completed, submitted, pending, verificationPending, cancelled, rejected, expired, refused(Refusal) }
+    enum Refusal: String { case providerRejected = "create:PROVIDER_REJECTED", startNewOrder = "create:START_NEW_ORDER" }
     private let order: StripeNativeOrder
     private let client: PaymentActionSending
     private let store: WalletAttemptStoring
@@ -91,10 +92,10 @@ final class StripeFlowController {
                 var retried = false
                 do {
                     result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key, retried: &retried)
-                } catch PaymentActionError.action(.providerRejected) where !retried { return .rejected }
+                } catch PaymentActionError.action(.providerRejected) where !retried { return .refused(.providerRejected) }
                 guard let created = result.session else {
                     guard result.status == "FAILED", result.next == "START_NEW_ORDER" else { throw StripeNativeError.invalidResponse }
-                    return .rejected
+                    return .refused(.startNewOrder)
                 }
                 session = created
                 return try await continueSession(result)
