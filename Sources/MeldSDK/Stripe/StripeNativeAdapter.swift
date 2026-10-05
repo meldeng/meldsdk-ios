@@ -95,13 +95,16 @@ final class StripePaymentSession: MeldProviderSession {
 
     static func events(for outcome: StripeFlowController.Outcome, mayHaveFinancialAttempt: Bool, orderId: String) -> [MeldEvent] {
         let pending = MeldEvent.statusChange(MeldStatusChange(orderId: orderId, status: .pending, providerStatus: nil, raw: nil))
+        let declined = { (detail: String) in
+            MeldEvent.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
+                message: "The payment was declined. Choose another payment option.", detail: detail, recoverable: false))
+        }
         switch outcome {
         case .cancelled: return [.cancel]
         case .completed: return [.statusChange(MeldStatusChange(orderId: orderId, status: .completed, providerStatus: nil, raw: nil))]
         case .submitted: return [pending, .paymentSubmitted]
-        case .rejected:
-            return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
-                message: "The payment was declined. Choose another payment option.", detail: "submission:FAILED", recoverable: false))]
+        case .rejected: return [declined("submission:FAILED")]
+        case let .refused(refusal): return [declined(refusal.rawValue)]
         case .expired:
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
                 message: "The payment expired before it completed. Choose another payment option.", detail: "submission:EXPIRED",
