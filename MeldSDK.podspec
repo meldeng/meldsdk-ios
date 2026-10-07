@@ -2,7 +2,7 @@ Pod::Spec.new do |s|
   s.name             = 'MeldSDK'
   # Version is tag-driven in CI (see .github/workflows/release.yml, sets POD_VERSION=<tag>);
   # the literal fallback is only for local `pod lib lint`. SPM ignores this and uses the git tag.
-  s.version          = ENV['POD_VERSION'] || '0.2.0'
+  s.version          = ENV['POD_VERSION'] || '0.9.1'
   s.summary          = 'Embed a crypto on/off-ramp provider widget (Mercuryo card) in your iOS app.'
   s.description      = <<-DESC
     MeldSDK mounts a payment provider's widget into a view you own and relays its lifecycle
