@@ -124,7 +124,7 @@ final class StripePaymentSession: MeldProviderSession {
         switch error {
         case let PaymentActionError.action(code): detail = "action:\(code.rawValue)"
         case is StripeNativeError, is PaymentActionError: detail = String(describing: error)
-        default: detail = "\(raw.domain) #\(raw.code)"
+        default: detail = MeldDebugError.describe(error)
         }
         guard mayHaveFinancialAttempt else {
             return MeldError(orderId: orderId, code: MeldErrorCode.presentationFailed,

@@ -43,7 +43,7 @@ final class StripeSdkRuntime {
         catch {
             // No coordinator was returned. A later explicit attempt can retry initialization.
             ownership.release(owner)
-            throw Task.isCancelled ? StripeNativeError.cancelled : StripeNativeError.unavailable
+            throw Task.isCancelled ? StripeNativeError.cancelled : StripeNativeError.provider(MeldDebugError.describe(error))
         }
         let runtime = StripeSdkRuntime(driver: driver, ownership: ownership, owner: owner, abandonAfter: abandonAfter)
         if Task.isCancelled { await runtime.close(); throw StripeNativeError.cancelled }
@@ -68,7 +68,7 @@ final class StripeSdkRuntime {
         } catch {
             running = false
             if !active || Task.isCancelled { await close(); throw StripeNativeError.cancelled }
-            throw error as? StripeNativeError ?? StripeNativeError.unavailable
+            throw error as? StripeNativeError ?? StripeNativeError.provider(MeldDebugError.describe(error))
         }
     }
 

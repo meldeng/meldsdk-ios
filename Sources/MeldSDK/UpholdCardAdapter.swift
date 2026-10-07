@@ -345,7 +345,7 @@ private final class UpholdTwoStepSession: MeldProviderSession {
                     self.handlers.onError?(
                         MeldError(
                             orderId: self.orderId, code: "authorize_session_failed",
-                            message: error.localizedDescription, detail: nil, recoverable: false))
+                            message: error.localizedDescription, detail: MeldDebugError.describe(error), recoverable: false))
                 }
             }
         }

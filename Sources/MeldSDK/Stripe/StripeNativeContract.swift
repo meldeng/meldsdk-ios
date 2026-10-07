@@ -5,6 +5,7 @@ import StripeCore
 
 enum StripeNativeError: Error {
     case invalidOrder, invalidResponse, unavailable, busy, cancelled, authorizationRequired, actionRequired
+    case provider(String)
 }
 
 /// Validated inputs for the native adapter. Descriptions never expose customer or SDK credentials.

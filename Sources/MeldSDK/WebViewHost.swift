@@ -307,8 +307,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     /// "<NSError domain> #<code>" for `MeldError.detail`, so integrators can tell a TLS failure
     /// from a DNS failure without parsing the localized message.
     private static func detail(from error: Error) -> String {
-        let ns = error as NSError
-        return "\(ns.domain) #\(ns.code)"
+        MeldDebugError.describe(error)
     }
 
     /// Scheme + host of a URL as a postMessage origin string ("https://widget.mercuryo.io").
