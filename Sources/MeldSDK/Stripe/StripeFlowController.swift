@@ -31,7 +31,9 @@ final class StripeFlowLifetime: @unchecked Sendable {
 
 @MainActor
 final class StripeFlowController {
-    enum Outcome: Equatable { case completed, submitted, pending, verificationPending, cancelled, rejected, expired, refused(Refusal) }
+    enum Outcome: Equatable {
+        case completed, submitted, pending, verificationPending, verificationRequired, cancelled, rejected, expired, refused(Refusal)
+    }
     enum Refusal: String { case providerRejected = "create:PROVIDER_REJECTED", startNewOrder = "create:START_NEW_ORDER" }
     private let order: StripeNativeOrder
     private let client: PaymentActionSending
@@ -49,7 +51,10 @@ final class StripeFlowController {
     private var submittedPrefill: Set<String> = []
     private var verifiedTier: String?
     private var started = false
-    var mayHaveFinancialAttempt: Bool { financialStarted || ((try? store.record())?.submissionStarted ?? true) }
+    private var refusedBeforePayment = false
+    var mayHaveFinancialAttempt: Bool {
+        !refusedBeforePayment && (financialStarted || ((try? store.record())?.submissionStarted ?? true))
+    }
 
     init(order: StripeNativeOrder, client: PaymentActionSending, store: WalletAttemptStoring,
          forms: StripeFlowPresenting, lifetime: StripeFlowLifetime, request: PKPaymentRequest?,
@@ -96,6 +101,11 @@ final class StripeFlowController {
                     result = try await action("CREATE_PAYMENT_SESSION", fields: ["paymentToken": token], key: key, retried: &retried)
                 } catch PaymentActionError.action(.providerRejected) where !retried { return .refused(.providerRejected) }
                 guard let created = result.session else {
+                    if result.status == "REJECTED", result.next == "SDK_COLLECT_KYC" || result.next == "SDK_VERIFY_IDENTITY" {
+                        refusedBeforePayment = true
+                        financialStarted = false
+                        return try await stepUpAfterRefusal(result.next)
+                    }
                     guard result.status == "FAILED", result.next == "START_NEW_ORDER" else { throw StripeNativeError.invalidResponse }
                     return .refused(.startNewOrder)
                 }
@@ -242,6 +252,20 @@ final class StripeFlowController {
             guard try await verifyCustomer() else { return false }
         }
         return true
+    }
+
+    /// Stripe refused the session for more KYC (e.g. a risk-rule identity challenge) before any charge; ID checks need L1 first.
+    private func stepUpAfterRefusal(_ next: String) async throws -> Outcome {
+        if next == "SDK_COLLECT_KYC" || verifiedTier == "L0" || verifiedTier == "NONE" {
+            let input = try await identity(fields: verifiedTier == "L0" ? ["DATE_OF_BIRTH", "ID_NUMBER"] : [], prefilled: true)
+            try await sdk { try await $0.attachIdentity(input) }
+            guard try await verifyCustomer() else { return .verificationRequired }
+        }
+        if next == "SDK_VERIFY_IDENTITY" {
+            let presenter = try await forms.handOff()
+            try await sdk { try await $0.verifyIdentity(from: presenter) }
+        }
+        return .verificationRequired
     }
 
     private func confirmIdentity() async throws {
