@@ -360,6 +360,46 @@ final class StripeFlowControllerTests: XCTestCase {
         }
     }
 
+    func testAnIdentityChallengeAtL0CollectsL1ThenRunsTheIdCheckWithoutPaying() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "L0"), FlowHarness.read("REJECTED", "SDK_VERIFY_IDENTITY"), FlowHarness.customer(tier: "L1")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationRequired)
+        XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"]])
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertEqual(attached.idNumber, "000000000")
+        XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize", "registerWallet", "collectPayment", "createPaymentToken",
+                                        "attachIdentity", "verifyIdentity"])
+        XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "PREPARE_CUSTOMER_AUTHORIZATION", "COMPLETE_CUSTOMER_LINK",
+            "READ_CUSTOMER_STATUS", "READ_LIMITS", "CREATE_PAYMENT_SESSION", "READ_CUSTOMER_STATUS"])
+        await h.flow.close()
+    }
+
+    func testAnIdentityChallengeAtL1RunsOnlyTheIdCheck() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.read("REJECTED", "SDK_VERIFY_IDENTITY")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationRequired)
+        XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
+        XCTAssertTrue(h.driver.attached.isEmpty)
+        XCTAssertEqual(h.driver.calls.suffix(2), ["createPaymentToken", "verifyIdentity"])
+        await h.flow.close()
+    }
+
+    func testAKycRefusalAtSessionCreateCollectsL1WithoutTheIdCheck() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "L0"), FlowHarness.read("REJECTED", "SDK_COLLECT_KYC"), FlowHarness.customer(tier: "L1")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationRequired)
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"]])
+        XCTAssertFalse(h.driver.calls.contains("verifyIdentity"))
+        XCTAssertEqual(h.driver.calls.last, "attachIdentity")
+        await h.flow.close()
+    }
+
     func testPendingVerificationStopsBeforeCollectingOrClaimingPayment() async throws {
         let h = try FlowHarness()
         h.client.responses = FlowHarness.bootstrap + Array(repeating: FlowHarness.customer("PENDING", next: "RETRY"), count: 12)
@@ -817,6 +857,7 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(names(.pending, attempt: true), ["status:pending", "error:PAYMENT_OUTCOME_UNKNOWN"])
         XCTAssertEqual(names(.verificationPending, attempt: true), ["status:pending", "error:PAYMENT_OUTCOME_UNKNOWN"])
         XCTAssertEqual(names(.verificationPending, attempt: false), ["error:VERIFICATION_PENDING"])
+        XCTAssertEqual(names(.verificationRequired, attempt: true), ["error:VERIFICATION_PENDING"])
         XCTAssertEqual(names(.submitted, attempt: true), ["status:pending", "submitted"])
         XCTAssertEqual(names(.completed, attempt: true), ["status:completed"])
         XCTAssertEqual(names(.cancelled, attempt: false), ["cancel"])
