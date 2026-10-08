@@ -11,6 +11,7 @@ struct StripeActionResponse: CustomStringConvertible {
     private let secret: String?
     private let expiresAt: Date?
     let missingFields: [String]
+    let highestVerifiedTier: String?
     let prefill: StripePrefill?
     private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
@@ -52,8 +53,9 @@ struct StripeActionResponse: CustomStringConvertible {
                   fields.allSatisfy(Self.fields.contains), Set(fields).count == fields.count
             else { throw StripeNativeError.invalidResponse }
             missingFields = fields
+            highestVerifiedTier = customer["highestVerifiedTier"] as? String
             hasCustomer = true
-        } else { missingFields = []; hasCustomer = false }
+        } else { missingFields = []; highestVerifiedTier = nil; hasCustomer = false }
         if next == "SDK_REGISTER_CUSTOMER", value["sdk"] != nil {
             throw StripeNativeError.invalidResponse
         }

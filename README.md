@@ -318,9 +318,15 @@ from one stays up. `unmount()` dismisses whatever the SDK or Stripe presented an
 
 The server's `READ_SUBMISSION` answer can carry `sdk.prefill`. Its `email` is the one Meld authorizes
 with Link, so the SDK uses it instead of asking. A verified `phone` registers a new Link account
-without a form, and `identity` (name, date of birth, US address) is submitted on Stripe's first KYC
-request, leaving only the fields it does not cover, such as the SSN. If Stripe rejects that submission
+without a form, and `identity` (name, date of birth, US address) fills Stripe's KYC requests, each value
+sent at most once, leaving only the fields it does not cover, such as the SSN. If Stripe rejects that submission
 the full form is shown. Without `prefill` the SDK asks for everything, as before.
+
+Stripe's KYC confirm screen is skipped for customers verified only at L0; a server that reports no tier
+keeps the confirm screen. Before payment the SDK checks
+the customer's limits and, when the order is over them, asks an L0 customer for date of birth and SSN
+(date of birth prefilled when available, SSN always typed) or runs Stripe's document check for an L1
+customer. Limits that cannot be read never block the purchase.
 
 ### Provider-hosted Apple Pay
 
