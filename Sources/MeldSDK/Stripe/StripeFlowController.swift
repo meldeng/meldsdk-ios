@@ -46,7 +46,8 @@ final class StripeFlowController {
     private var financialStarted = false
     private var session: String?
     private var prefill: StripePrefill?
-    private var identityPrefillUsed = false
+    private var submittedPrefill: Set<String> = []
+    private var verifiedTier: String?
     private var started = false
     var mayHaveFinancialAttempt: Bool { financialStarted || ((try? store.record())?.submissionStarted ?? true) }
 
@@ -81,7 +82,8 @@ final class StripeFlowController {
             try await authenticate(authentication)
             guard try await verifyCustomer() else { return .verificationPending }
             if session == nil {
-                try await confirmIdentity()
+                if verifiedTier != "L0", verifiedTier != "NONE" { try await confirmIdentity() }
+                guard try await stepUpOverLimits() else { return .verificationPending }
                 try await sdk { try await $0.registerWallet(address: self.order.walletAddress, network: self.order.walletNetwork) }
                 let presenter = try await forms.handOff()
                 try await sdk { try await $0.collectPayment(request: self.request, from: presenter) }
@@ -164,15 +166,16 @@ final class StripeFlowController {
         try await sdk { try await $0.register(email: email, name: registration.name, phone: registration.phone, country: "US") }
     }
 
-    /// Stripe rejecting a prefilled submission falls back to the form, so the same values are never resent.
+    /// Each prefilled value is submitted at most once, so a value Stripe rejected is never resent.
     private func identity(fields: [String], prefilled: Bool) async throws -> StripeIdentityInput {
-        guard prefilled, !identityPrefillUsed, let known = prefill?.identity else {
+        guard prefilled, let known = prefill?.identity else {
             // After a rejected prefill, ask for everything: Stripe may not list the prefilled fields as missing.
-            return try await forms.identity(fields: identityPrefillUsed ? [] : fields)
+            return try await forms.identity(fields: !submittedPrefill.isEmpty && !prefilled ? [] : fields)
         }
-        identityPrefillUsed = true
         let wanted = fields.isEmpty ? Self.identityFields : fields
+        let submitted = submittedPrefill
         let covered: (String) -> Bool = {
+            guard !submitted.contains(Self.prefillKey($0)) else { return false }
             switch $0 {
             case "FIRST_NAME": return known.firstName != nil
             case "LAST_NAME": return known.lastName != nil
@@ -187,9 +190,12 @@ final class StripeFlowController {
         if wanted.contains("DATE_OF_BIRTH"), covered("DATE_OF_BIRTH") {
             input.birthDay = known.birthDay; input.birthMonth = known.birthMonth; input.birthYear = known.birthYear
         }
-        if wanted.contains(where: { $0.hasPrefix("ADDRESS_") }), known.address != nil { input.address = known.address }
+        if let field = wanted.first(where: { $0.hasPrefix("ADDRESS_") }), covered(field) { input.address = known.address }
+        submittedPrefill.formUnion(wanted.filter(covered).map(Self.prefillKey))
         return input
     }
+
+    private static func prefillKey(_ field: String) -> String { field.hasPrefix("ADDRESS_") ? "ADDRESS" : field }
 
     private static let identityFields = ["FIRST_NAME", "LAST_NAME", "DATE_OF_BIRTH", "ID_NUMBER", "ADDRESS_LINE_1",
                                          "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
@@ -200,6 +206,7 @@ final class StripeFlowController {
             try result.validateCustomerAction(requiresDetails: true)
             switch (result.status, result.next) {
             case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"):
+                verifiedTier = result.highestVerifiedTier
                 return true
             case ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"):
                 let input = try await identity(fields: result.missingFields, prefilled: result.status == "NOT_STARTED")
@@ -214,6 +221,27 @@ final class StripeFlowController {
             }
         }
         return false
+    }
+
+    /// L1 data is one-way, so a customer steps up only when the order is over their current limits.
+    private func stepUpOverLimits() async throws -> Bool {
+        var previous: (step: String, tier: String?)?
+        for _ in 0..<3 {
+            guard let limits = try? await action("READ_LIMITS") else { try check(); return true }
+            if let previous, previous.step == limits.next, previous.tier == verifiedTier { return true }
+            previous = (limits.next, verifiedTier)
+            switch limits.next {
+            case "SDK_COLLECT_KYC":
+                let input = try await identity(fields: verifiedTier == "L0" ? ["DATE_OF_BIRTH", "ID_NUMBER"] : [], prefilled: true)
+                try await sdk { try await $0.attachIdentity(input) }
+            case "SDK_VERIFY_IDENTITY":
+                let presenter = try await forms.handOff()
+                try await sdk { try await $0.verifyIdentity(from: presenter) }
+            default: return true
+            }
+            guard try await verifyCustomer() else { return false }
+        }
+        return true
     }
 
     private func confirmIdentity() async throws {

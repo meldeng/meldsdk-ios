@@ -18,7 +18,7 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(h.driver.collectedRequest?.merchantIdentifier, "merchant.example.stripe")
         XCTAssertEqual(h.driver.collectedRequest?.currencyCode, "USD")
         XCTAssertEqual(h.driver.collectedRequest?.paymentSummaryItems.last?.amount, NSDecimalNumber(value: 20))
-        XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "PREPARE_CUSTOMER_AUTHORIZATION", "COMPLETE_CUSTOMER_LINK", "READ_CUSTOMER_STATUS", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "READ_SUBMISSION"])
+        XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "PREPARE_CUSTOMER_AUTHORIZATION", "COMPLETE_CUSTOMER_LINK", "READ_CUSTOMER_STATUS", "READ_LIMITS", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "READ_SUBMISSION"])
         await h.flow.close()
         XCTAssertEqual(h.driver.logouts, 1)
     }
@@ -158,12 +158,13 @@ final class StripeFlowControllerTests: XCTestCase {
 
     func testResumeRestoresAuthenticationAndUsesOnlyTheExistingSession() async throws {
         let h = try FlowHarness()
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
         h.client.responses = [FlowHarness.resume(), FlowHarness.authToken, FlowHarness.customer(next: "REFRESH_QUOTE"),
                               FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
         let outcome = try await h.flow.run()
         XCTAssertEqual(outcome, .submitted)
         XCTAssertEqual(h.driver.calls, ["authenticate", "checkout"])
-        XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+        XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" || $0.operation == "READ_LIMITS" })
         XCTAssertTrue(h.store.value.submissionStarted)
         XCTAssertTrue(h.forms.calls.isEmpty)
         await h.flow.close()
@@ -193,6 +194,170 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(h.driver.calls.filter { ["attachIdentity", "verifyIdentity", "confirmIdentity"].contains($0) },
                        ["attachIdentity", "verifyIdentity", "confirmIdentity", "confirmIdentity"])
         await h.flow.close()
+    }
+
+    func testOnlyACustomerWithKycDataOnFileIsAskedToConfirmIt() async throws {
+        for (tier, confirms): (String?, Bool) in [("L0", false), ("NONE", false), ("L1", true), ("L2", true), (nil, true)] {
+            let h = try FlowHarness()
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(tier: tier), FlowHarness.payment(), FlowHarness.payment(),
+                                                          FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+            let outcome = try await h.flow.run()
+            XCTAssertEqual(outcome, .submitted, tier ?? "absent")
+            XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize"] + (confirms ? ["confirmIdentity"] : []) +
+                           ["registerWallet", "collectPayment", "createPaymentToken", "checkout"], tier ?? "absent")
+            XCTAssertTrue(h.driver.attached.isEmpty, tier ?? "absent")
+            await h.flow.close()
+        }
+    }
+
+    func testAnOrderOverAnL0CustomersLimitsAddsOnlyTheirDateOfBirthAndTypedIdNumber() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "L0"), FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+             FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"]])
+        XCTAssertEqual(h.driver.attached.count, 1)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertEqual(attached.birthMonth, 3); XCTAssertEqual(attached.birthDay, 15)
+        XCTAssertEqual(attached.idNumber, "000000000")
+        XCTAssertNil(attached.firstName); XCTAssertNil(attached.lastName); XCTAssertNil(attached.address)
+        XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize", "attachIdentity", "registerWallet", "collectPayment", "createPaymentToken", "checkout"])
+        XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "PREPARE_CUSTOMER_AUTHORIZATION", "COMPLETE_CUSTOMER_LINK",
+            "READ_CUSTOMER_STATUS", "READ_LIMITS", "READ_CUSTOMER_STATUS", "READ_LIMITS", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "READ_SUBMISSION"])
+        XCTAssertTrue(h.client.calls.filter { $0.operation == "READ_LIMITS" }.allSatisfy { $0.key == nil && $0.fields.isEmpty })
+        await h.flow.close()
+    }
+
+    func testStepUpWithoutL0DataAsksForEveryL1FieldAndSendsEachPrefilledValueOnce() async throws {
+        let unverified = try FlowHarness()
+        unverified.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "NONE"), FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+             FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        unverified.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        _ = try await unverified.flow.run()
+        XCTAssertEqual(unverified.forms.identityRequests, [["ID_NUMBER"]])
+        XCTAssertEqual(unverified.driver.attached.first?.firstName, "Ada")
+        XCTAssertNotNil(unverified.driver.attached.first?.address)
+        await unverified.flow.close()
+        let prefilled = try FlowHarness()
+        prefilled.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1"]),
+             FlowHarness.customer(tier: "L0"), FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+             FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        prefilled.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        _ = try await prefilled.flow.run()
+        XCTAssertEqual(prefilled.forms.identityRequests, [["ID_NUMBER"]])
+        XCTAssertEqual(prefilled.driver.attached.count, 2)
+        XCTAssertEqual(prefilled.driver.attached.first?.firstName, "Ada")
+        XCTAssertNil(prefilled.driver.attached.first?.birthYear)
+        let stepUp = try XCTUnwrap(prefilled.driver.attached.last)
+        XCTAssertEqual(stepUp.birthYear, 1990); XCTAssertEqual(stepUp.birthMonth, 3); XCTAssertEqual(stepUp.birthDay, 15)
+        XCTAssertEqual(stepUp.idNumber, "000000000")
+        XCTAssertNil(stepUp.firstName); XCTAssertNil(stepUp.lastName); XCTAssertNil(stepUp.address)
+        await prefilled.flow.close()
+    }
+
+    func testARejectedStepUpAsksForEveryFieldAndNeverResendsThePrefilledDateOfBirth() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "L0"), FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: ["DATE_OF_BIRTH", "ID_NUMBER"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [["ID_NUMBER"], []])
+        XCTAssertEqual(h.driver.attached.count, 2)
+        XCTAssertEqual(h.driver.attached.first?.birthYear, 1990)
+        XCTAssertNil(h.driver.attached.last?.birthYear)
+        await h.flow.close()
+    }
+
+    func testStepUpsThatKeepAdvancingTheTierStopAfterThreeLimitReads() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(tier: "NONE"), FlowHarness.customer(tier: "L0"),
+            FlowHarness.customer(tier: "L1"), FlowHarness.customer(tier: "L2"), FlowHarness.payment(), FlowHarness.payment(),
+            FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC"), FlowHarness.limits("SDK_COLLECT_KYC"),
+                           FlowHarness.limits("SDK_VERIFY_IDENTITY"), FlowHarness.limits("SDK_VERIFY_IDENTITY")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.client.calls.filter { $0.operation == "READ_LIMITS" }.count, 3)
+        XCTAssertEqual(h.client.limits.count, 1)
+        XCTAssertEqual(h.forms.identityRequests, [[], ["DATE_OF_BIRTH", "ID_NUMBER"]])
+        XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize", "attachIdentity", "attachIdentity", "verifyIdentity", "registerWallet",
+                                        "collectPayment", "createPaymentToken", "checkout"])
+        await h.flow.close()
+    }
+
+    func testARepeatedStepUpThatDidNotAdvanceTheTierProceedsToPaymentWithoutAskingAgain() async throws {
+        for (tier, step, prompt) in [("L0", "SDK_COLLECT_KYC", "attachIdentity"), ("L1", "SDK_VERIFY_IDENTITY", "verifyIdentity")] {
+            let h = try FlowHarness()
+            h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(tier: tier), FlowHarness.customer(tier: tier),
+                FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+            h.client.limits = Array(repeating: FlowHarness.limits(step), count: 3)
+            let outcome = try await h.flow.run()
+            XCTAssertEqual(outcome, .submitted, tier)
+            XCTAssertEqual(h.client.calls.filter { $0.operation == "READ_LIMITS" }.count, 2, tier)
+            XCTAssertEqual(h.forms.identityRequests, tier == "L0" ? [["DATE_OF_BIRTH", "ID_NUMBER"]] : [], tier)
+            XCTAssertEqual(h.driver.calls.filter { ["attachIdentity", "verifyIdentity"].contains($0) }, [prompt], tier)
+            XCTAssertEqual(h.client.calls.filter { $0.operation == "CREATE_PAYMENT_SESSION" }.count, 1, tier)
+            await h.flow.close()
+        }
+    }
+
+    func testAnOrderOverAnL1CustomersLimitsVerifiesTheirIdentityBeforePaying() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.customer(tier: "L2"), FlowHarness.payment(),
+                                                      FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        h.client.limits = [FlowHarness.limits("SDK_VERIFY_IDENTITY")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize", "confirmIdentity", "verifyIdentity", "registerWallet", "collectPayment",
+                                        "createPaymentToken", "checkout"])
+        XCTAssertEqual(h.forms.handOffs, 5)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.client.calls.filter { $0.operation == "READ_LIMITS" }.count, 2)
+        await h.flow.close()
+    }
+
+    func testPendingVerificationAfterAStepUpStopsBeforeCollectingOrClaimingPayment() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(tier: "L0")] +
+            Array(repeating: FlowHarness.customer("PENDING", next: "RETRY"), count: 12)
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationPending)
+        XCTAssertEqual(h.forms.identityRequests, [["DATE_OF_BIRTH", "ID_NUMBER"]])
+        XCTAssertFalse(h.store.value.submissionStarted)
+        XCTAssertFalse(h.driver.calls.contains("registerWallet"))
+        XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+        await h.flow.close()
+    }
+
+    func testLimitsThatCannotBeReadNeverBlockThePurchase() async throws {
+        let failures: [(String, [Result<[String: Any], Error>])] = [
+            ("transport", [.failure(PaymentActionError.transport), .failure(PaymentActionError.transport)]),
+            ("server", [.failure(PaymentActionError.action(.providerUnavailable))]),
+            ("malformed", [.success(["version": 1, "status": "READY"])])]
+        for tier in ["L0", "L1"] {
+            for (failure, limits) in failures {
+                let name = "\(tier) \(failure)"
+                let h = try FlowHarness()
+                h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(tier: tier), FlowHarness.payment(), FlowHarness.payment(),
+                                                              FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+                h.client.limits = limits
+                let outcome = try await h.flow.run()
+                XCTAssertEqual(outcome, .submitted, name)
+                XCTAssertTrue(h.client.limits.isEmpty, name)
+                XCTAssertEqual(h.driver.calls, ["hasAccount", "authorize"] + (tier == "L1" ? ["confirmIdentity"] : []) +
+                               ["registerWallet", "collectPayment", "createPaymentToken", "checkout"], name)
+                XCTAssertEqual(h.client.calls.filter { $0.operation == "CREATE_PAYMENT_SESSION" }.count, 1, name)
+                await h.flow.close()
+            }
+        }
     }
 
     func testPendingVerificationStopsBeforeCollectingOrClaimingPayment() async throws {
@@ -279,7 +444,7 @@ final class StripeFlowControllerTests: XCTestCase {
             wire.protocolClasses = [FlowWire.self]
             let h = try FlowHarness(wire: wire)
             FlowWire.sent = []
-            FlowWire.replies = try (FlowHarness.bootstrap + [FlowHarness.customer()]).map { FlowWire.Reply.http(200, try $0.get()) } + create
+            FlowWire.replies = try (FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.limits()]).map { FlowWire.Reply.http(200, try $0.get()) } + create
             let reported: MeldError?
             do {
                 reported = StripePaymentSession.events(for: try await h.flow.run(), mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt,
@@ -289,6 +454,7 @@ final class StripeFlowControllerTests: XCTestCase {
             }
             XCTAssertEqual(reported?.code, code)
             XCTAssertEqual(reported?.detail, detail)
+            XCTAssertEqual(FlowWire.sent.filter { $0.operation == "READ_LIMITS" }.map(\.key), [nil])
             let creates = FlowWire.sent.filter { $0.operation == "CREATE_PAYMENT_SESSION" }
             XCTAssertEqual(creates.count, create.count)
             XCTAssertEqual(creates.map(\.key), Array(repeating: h.store.value.submissionKey.uuidString.lowercased(), count: create.count))
@@ -879,8 +1045,14 @@ private final class FlowHarness {
     static func resume() -> Result<[String: Any], Error> {
         .success(["version": 1, "status": "READY", "nextStep": "REFRESH_QUOTE", "sdk": ["authenticationState": "RESTORE", "sessionHandle": "cos_synthetic"]])
     }
-    static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = []) -> Result<[String: Any], Error> {
-        .success(["version": 1, "status": status, "nextStep": next, "customer": ["missingFields": missing, "highestVerifiedTier": "L1", "tiers": []]])
+    static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = [],
+                         tier: String? = "L1") -> Result<[String: Any], Error> {
+        var customer: [String: Any] = ["missingFields": missing, "tiers": []]
+        customer["highestVerifiedTier"] = tier
+        return .success(["version": 1, "status": status, "nextStep": next, "customer": customer])
+    }
+    nonisolated static func limits(_ next: String = "CREATE_PAYMENT_SESSION") -> Result<[String: Any], Error> {
+        .success(["version": 1, "status": "READY", "nextStep": next, "limits": ["availability": "AVAILABLE", "limits": []]])
     }
     static func payment(_ status: String = "REQUIRES_PAYMENT", next: String = "CONFIRM_PAYMENT", secret: Bool = true) -> Result<[String: Any], Error> {
         var sdk = ["sessionHandle": "cos_synthetic"]
@@ -942,11 +1114,13 @@ private final class FlowClient: PaymentActionSending {
     struct Call { let operation: String; let fields: [String: Any]; let key: UUID? }
     var calls: [Call] = []
     var responses: [Result<[String: Any], Error>] = []
+    var limits: [Result<[String: Any], Error>] = []
     var delay = false
     var delayed: ((Result<[String: Any], Error>) -> Void)?
     func send(_ operation: String, fields: [String: Any], key: UUID?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         calls.append(Call(operation: operation, fields: fields, key: key))
         if delay { delayed = completion; return }
+        if operation == "READ_LIMITS" { completion(limits.isEmpty ? FlowHarness.limits() : limits.removeFirst()); return }
         guard !responses.isEmpty else { XCTFail("Unexpected action \(operation)"); completion(.failure(PaymentActionError.invalidResponse)); return }
         completion(responses.removeFirst())
     }
