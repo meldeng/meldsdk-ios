@@ -109,6 +109,10 @@ final class StripePaymentSession: MeldProviderSession {
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
                 message: "The payment expired before it completed. Choose another payment option.", detail: "submission:EXPIRED",
                 recoverable: false))]
+        case .verificationRequired:
+            return [.error(MeldError(orderId: orderId, code: MeldErrorCode.verificationPending,
+                message: "The provider needs more verification before this purchase. No payment was attempted.",
+                detail: "create:VERIFICATION_REQUIRED", recoverable: false))]
         case .verificationPending where !mayHaveFinancialAttempt:
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.verificationPending,
                 message: "The provider is reviewing the customer's verification. No payment was attempted.", recoverable: false))]
