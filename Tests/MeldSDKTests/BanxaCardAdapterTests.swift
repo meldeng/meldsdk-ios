@@ -1,3 +1,4 @@
+import PrimerSDK
 import UIKit
 import XCTest
 
@@ -47,11 +48,11 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertTrue(existential.matches(order()))
     }
 
-    func testMountThrowsWhenNoHostIsProvided() {
-        // context.host is nil for surfaces that present themselves (Apple Pay sheets). Banxa card is
-        // an embedded widget and has nowhere to render without one.
+    func testWebPresenterThrowsWhenNoHostIsProvided() {
+        // context.host is nil for surfaces that present themselves (Apple Pay sheets). The web
+        // component is an embedded widget and has nowhere to render without one.
         XCTAssertThrowsError(
-            try BanxaCardAdapter().mount(
+            try BanxaCardAdapter(presenter: BanxaWebCheckoutPresenter()).mount(
                 order: order(), context: MeldMountContext(host: nil, applePay: nil), handlers: .init())
         ) { error in
             guard case MeldMountError.missingHost = error else {
@@ -105,8 +106,12 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertNil(Meld.adapter(for: applePayOrder), "no adapter should claim a Banxa Apple Pay order")
     }
 
-    func testCapabilitiesReportEmbeddable() {
-        XCTAssertTrue(Meld.capabilities(for: order()).embeddable)
+    func testCapabilitiesReportANativeSheet() {
+        // Primer's drop-in presents its own modal: the integrator must not lay out a container for it,
+        // and routes it the way it routes Stripe's native sheet.
+        let capabilities = Meld.capabilities(for: order())
+        XCTAssertFalse(capabilities.embeddable)
+        XCTAssertEqual(capabilities.surface, "native-sdk")
     }
 
     // MARK: - Mount preconditions
@@ -125,9 +130,19 @@ final class BanxaCardAdapterTests: XCTestCase {
         }
     }
 
-    func testMountsNativeCheckoutWhenTokenIsPresent() {
+    func testMountsTheWebComponentWhenTokenIsPresent() {
         let host = UIView()
-        XCTAssertNoThrow(try BanxaCardAdapter().mount(order: order(), context: MeldMountContext(host: host, applePay: nil), handlers: .init()))
+        XCTAssertNoThrow(try BanxaCardAdapter(presenter: BanxaWebCheckoutPresenter())
+            .mount(order: order(), context: MeldMountContext(host: host, applePay: nil), handlers: .init()))
+    }
+
+    func testNativePresenterNeedsNoHost() throws {
+        // Unmounted straight away: the form is presented on the next main-queue turn, which the
+        // finished guard then skips, so the test never drives Primer's singleton.
+        let session = try BanxaCardAdapter().mount(
+            order: order(), context: MeldMountContext(host: nil, applePay: nil), handlers: .init())
+        XCTAssertTrue(session is BanxaPrimerCardSession)
+        session.unmount()
     }
 
     // MARK: - Event mapping
@@ -317,13 +332,25 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertEqual(presenter.orderId, "order-1")
     }
 
+    func testNativePresenterRejectsAnOrderWithNoToken() {
+        XCTAssertThrowsError(
+            try BanxaCardAdapter().mount(
+                order: order(extra: [:]), context: MeldMountContext(host: nil, applePay: nil), handlers: .init())
+        ) { error in
+            guard case MeldMountError.unsupported(let detail) = error else {
+                return XCTFail("expected .unsupported, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("sdkSessionToken"))
+        }
+    }
+
     func testWebPresenterRejectsAnOrderWithNoToken() {
         // Validation belongs to the presenter now, not the adapter: the web component needs an
         // sdkSessionToken and Banxa's own SDK needs order parameters instead, so only the presenter
         // knows what "missing" means. Mounting without a token must fail rather than render a surface
         // Primer can never start a session for.
         XCTAssertThrowsError(
-            try BanxaCardAdapter().mount(
+            try BanxaCardAdapter(presenter: BanxaWebCheckoutPresenter()).mount(
                 order: order(extra: [:]), context: MeldMountContext(host: UIView(), applePay: nil),
                 handlers: .init())
         ) { error in
@@ -333,10 +360,59 @@ final class BanxaCardAdapterTests: XCTestCase {
         }
     }
 
-    func testDefaultPresenterIsTheWebComponentSoExistingIntegrationsAreUnchanged() {
-        XCTAssertTrue(BanxaCardAdapter().presenter is BanxaWebCheckoutPresenter)
-        XCTAssertEqual(BanxaCardAdapter().capabilities.surface, "embedded")
-        XCTAssertTrue(BanxaCardAdapter().capabilities.embeddable)
+    func testDefaultPresenterIsPrimersNativeCardForm() {
+        XCTAssertTrue(BanxaCardAdapter().presenter is BanxaNativeCheckoutPresenter)
+        XCTAssertEqual(BanxaCardAdapter().capabilities.surface, "native-sdk")
+        XCTAssertFalse(BanxaCardAdapter().capabilities.embeddable)
+        XCTAssertTrue(BanxaCardAdapter().capabilities.requiresUserGesture)
+    }
+
+    // MARK: - Native card outcome
+
+    private func failed(_ status: String = "FAILED") -> PrimerError {
+        PrimerError.paymentFailed(paymentMethodType: "PAYMENT_CARD", paymentId: "y3DQpU656", orderId: nil, status: status)
+    }
+
+    func testAPaymentFailedAtCreateIsRejected() {
+        XCTAssertEqual(BanxaPrimerCardSession.code(for: failed(), checkoutData: nil, presented: true),
+                       MeldErrorCode.paymentRejected)
+    }
+
+    func testAPaymentFailedOnResumeAfter3DSIsRejected() {
+        // Primer rewraps the resume's paymentFailed as failed-to-resume-payment, keeping only its
+        // description: the shape a real-card decline after 3DS took on Banxa's RN SDK (y3DQpU656).
+        let resumed = PrimerError.failedToResumePayment(paymentMethodType: "PAYMENT_CARD",
+                                                        description: failed().localizedDescription)
+        XCTAssertEqual(BanxaPrimerCardSession.errorId(resumed), "failed-to-resume-payment")
+        XCTAssertEqual(BanxaPrimerCardSession.code(for: resumed, checkoutData: nil, presented: true),
+                       MeldErrorCode.paymentRejected)
+        XCTAssertTrue(BanxaPrimerCardSession.detail(for: resumed, checkoutData: nil)
+            .hasPrefix("banxa_card_failed:failed-to-resume-payment primerPaymentId=y3DQpU656 diagnosticsId="))
+    }
+
+    func testAResumeThatFailedInFlightMayStillHaveAPayment() {
+        let resumed = PrimerError.failedToResumePayment(paymentMethodType: "PAYMENT_CARD",
+                                                        description: "The request timed out.")
+        let code = BanxaPrimerCardSession.code(for: resumed, checkoutData: nil, presented: true)
+        XCTAssertEqual(code, MeldErrorCode.paymentOutcomeUnknown)
+        XCTAssertTrue(MeldErrorCode.attemptMayExist(code))
+    }
+
+    func testAPendingPaymentIsNotReportedAsDeclined() {
+        XCTAssertEqual(BanxaPrimerCardSession.code(for: failed("PENDING"), checkoutData: nil, presented: true),
+                       MeldErrorCode.paymentOutcomeUnknown)
+    }
+
+    func testAFailureBeforeTheFormAppearedIsAPresentationFailure() {
+        XCTAssertEqual(BanxaPrimerCardSession.code(for: failed(), checkoutData: nil, presented: false),
+                       MeldErrorCode.presentationFailed)
+    }
+
+    func testPrimersOwnResultScreensAreOffSoTheIntegratorOwnsTheOutcome() {
+        let settings = BanxaPrimerCardSession.settings()
+        XCTAssertFalse(settings.uiOptions.isSuccessScreenEnabled)
+        XCTAssertFalse(settings.uiOptions.isErrorScreenEnabled)
+        XCTAssertTrue(settings.uiOptions.isInitScreenEnabled)
     }
 
     func testCapabilitiesFollowThePresenterRatherThanBeingFixedOnTheAdapter() {
