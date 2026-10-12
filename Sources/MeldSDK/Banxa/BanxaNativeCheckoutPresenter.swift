@@ -80,8 +80,8 @@ final class BanxaPrimerCardSession: NSObject, MeldProviderSession {
         }
     }
 
-    /// Primer's own success and error screens are off: the integrator owns the outcome copy (Par says
-    /// "This payment was declined…" from `PAYMENT_REJECTED`), and a second message from Primer would
+    /// Primer's own success and error screens are off: the integrator owns the outcome copy (from
+    /// `PAYMENT_REJECTED` and `MeldErrorMessage`), and a second message from Primer would
     /// contradict or duplicate it. The loading screen stays, since the form needs a configuration fetch.
     static func settings() -> PrimerSettings {
         PrimerSettings(
@@ -118,10 +118,11 @@ final class BanxaPrimerCardSession: NSObject, MeldProviderSession {
 
     fileprivate func fail(_ error: Error, checkoutData: PrimerCheckoutData? = nil) {
         guard !finished else { return releaseRetain() }
+        let code = Self.code(for: error, checkoutData: checkoutData, presented: presented)
         handlers.onError?(MeldError(
             orderId: orderId,
-            code: Self.code(for: error, checkoutData: checkoutData, presented: presented),
-            message: error.localizedDescription,
+            code: code,
+            message: MeldErrorMessage.standard(for: code) ?? error.localizedDescription,
             detail: Self.detail(for: error, checkoutData: checkoutData),
             // A new order is needed: the client token is bound to one checkout session.
             recoverable: false))

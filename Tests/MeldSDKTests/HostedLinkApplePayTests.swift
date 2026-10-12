@@ -186,15 +186,23 @@ final class HostedLinkApplePayTests: XCTestCase {
             XCTAssertEqual(error.code, row.code, "\(row)")
             XCTAssertFalse(error.recoverable, "\(row)")
             XCTAssertEqual(error.detail, row.providerCode.map { "\(row.event):\($0)" } ?? row.event)
-            XCTAssertEqual(error.message, "The provider reported an error.")
+            XCTAssertEqual(error.message, MeldErrorMessage.standard(for: row.code) ?? "The provider reported an error.")
         }
     }
 
-    func testErrorCarriesTheProviderMessage() {
-        let mapped = events("onramp_api.commit_error", data: #"{"errorMessage":"card declined"}"#)
+    func testAnErrorThatIsNotADeclineCarriesTheProviderMessage() {
+        let mapped = events("onramp_api.load_error", data: #"{"errorMessage":"page unavailable"}"#)
+        guard case let .error(error) = mapped.first else { return XCTFail("expected .error") }
+        XCTAssertEqual(error.code, "PRESENTATION_FAILED")
+        XCTAssertEqual(error.message, "page unavailable")
+    }
+
+    func testADeclineUsesTheSharedCopyRatherThanTheProviders() {
+        let mapped = events("onramp_api.commit_error", data: #"{"errorCode":"ERROR_CODE_DECLINED","errorMessage":"card declined"}"#)
         guard case let .error(error) = mapped.first else { return XCTFail("expected .error") }
         XCTAssertEqual(error.code, "PAYMENT_REJECTED")
-        XCTAssertEqual(error.message, "card declined")
+        XCTAssertEqual(error.message, MeldErrorMessage.paymentRejected)
+        XCTAssertEqual(error.detail, "onramp_api.commit_error:ERROR_CODE_DECLINED")
     }
 
     func testUnmappedEventIsIgnoredRatherThanTreatedAsFailure() {

@@ -255,6 +255,42 @@ final class TerminalGateTests: XCTestCase {
         XCTAssertFalse(MeldError(orderId: "ord_1", code: MeldErrorCode.paymentRejected, message: "x", recoverable: false).attemptMayExist)
         XCTAssertTrue(MeldError(orderId: "ord_1", code: MeldErrorCode.paymentOutcomeUnknown, message: "x", recoverable: false).attemptMayExist)
     }
+
+    func testOnlyDeclinesAndUnknownOutcomesHaveSharedCopy() {
+        XCTAssertEqual(MeldErrorMessage.standard(for: MeldErrorCode.paymentRejected), MeldErrorMessage.paymentRejected)
+        XCTAssertEqual(MeldErrorMessage.standard(for: MeldErrorCode.paymentOutcomeUnknown), MeldErrorMessage.paymentOutcomeUnknown)
+        for code in [MeldErrorCode.applePayUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.orderStateChanged,
+                     MeldErrorCode.verificationPending, "A_CODE_FROM_A_LATER_BUILD"] {
+            XCTAssertNil(MeldErrorMessage.standard(for: code), code)
+        }
+    }
+
+    @MainActor
+    func testABankDeclineReadsTheSameWhateverTheProvider() {
+        var messages: [String] = []
+        if case let .error(error)? = StripePaymentSession.events(for: .rejected, mayHaveFinancialAttempt: true,
+                                                                 orderId: "ord_1").first {
+            messages.append(error.message)
+        }
+        let banxa = ["type": "payment-failure",
+                     "detail": ["error": ["code": "PAYMENT_FAILED", "data": ["error": ["origin": "payment"]]]]] as [String: Any]
+        if case let .error(error)? = BanxaWebCheckoutPresenter.interpret(providerMessage: banxa, orderId: "ord_1").first {
+            messages.append(error.message)
+        }
+        let gate = TerminalGate()
+        gate.observe(.failed)
+        messages.append(gate.unannouncedEnd(orderId: "ord_1")?.message ?? "")
+        XCTAssertEqual(messages, Array(repeating: MeldErrorMessage.paymentRejected, count: 3))
+    }
+
+    @MainActor
+    func testARefusalBeforeAnyChargeDoesNotBlameTheBank() throws {
+        let event = try XCTUnwrap(StripePaymentSession.events(for: .refused(.providerRejected), mayHaveFinancialAttempt: false,
+                                                              orderId: "ord_1").first)
+        guard case let .error(error) = event else { return XCTFail("expected .error") }
+        XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
+        XCTAssertNotEqual(error.message, MeldErrorMessage.paymentRejected)
+    }
 }
 
 /// An adapter session whose teardown reports through the backstop, as Stripe's and Banxa's do.

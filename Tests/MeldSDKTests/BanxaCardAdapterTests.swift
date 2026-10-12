@@ -192,7 +192,7 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertFalse(error.attemptMayExist)
         XCTAssertFalse(error.recoverable)
         XCTAssertEqual(error.orderId, "order-1")
-        XCTAssertEqual(error.message, "The payment \"KiLILEZlP\" was created but failed to be processed.")
+        XCTAssertEqual(error.message, MeldErrorMessage.paymentRejected)
     }
 
     func testAFailureDetailKeepsPrimersCodeOriginPaymentIdAndDiagnosticsId() throws {
@@ -208,6 +208,7 @@ final class BanxaCardAdapterTests: XCTestCase {
             let error = try XCTUnwrap(meldError(primerFailure(origin: origin)))
             XCTAssertEqual(error.code, MeldErrorCode.paymentOutcomeUnknown, "origin \(origin ?? "nil")")
             XCTAssertTrue(error.attemptMayExist)
+            XCTAssertEqual(error.message, MeldErrorMessage.paymentOutcomeUnknown)
         }
     }
 

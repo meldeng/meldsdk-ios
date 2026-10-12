@@ -194,11 +194,12 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
     fileprivate func fail(_ error: Error, checkoutData: PrimerCheckoutData? = nil) {
         guard !finished else { return releaseRetain() }
         let raw = error as NSError
+        let code = Self.code(for: error, checkoutData: checkoutData, presented: presented)
         handlers.onError?(
             MeldError(
                 orderId: orderId,
-                code: Self.code(for: error, checkoutData: checkoutData, presented: presented),
-                message: error.localizedDescription,
+                code: code,
+                message: MeldErrorMessage.standard(for: code) ?? error.localizedDescription,
                 detail: "banxa_apple_pay_failed:\(Self.errorId(error) ?? "\(raw.domain) #\(raw.code)")",
                 // A new order is needed: the client token is bound to one checkout session.
                 recoverable: false))
