@@ -149,10 +149,12 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
              "onramp_api.error":
             let data = json["data"] as? [String: Any]
             let providerCode = data?["errorCode"] as? String
+            let code = errorCode(eventName, providerCode: providerCode)
             return [.error(MeldError(
                 orderId: orderId,
-                code: errorCode(eventName, providerCode: providerCode),
-                message: data?["errorMessage"] as? String ?? "The provider reported an error.",
+                code: code,
+                message: MeldErrorMessage.standard(for: code)
+                    ?? data?["errorMessage"] as? String ?? "The provider reported an error.",
                 detail: providerCode.map { "\(eventName):\($0)" } ?? eventName,
                 recoverable: false))]
 

@@ -29,3 +29,22 @@ public extension MeldError {
     /// Whether a payment attempt may exist for this order. See `MeldErrorCode.attemptMayExist(_:)`.
     var attemptMayExist: Bool { MeldErrorCode.attemptMayExist(code) }
 }
+
+/// `MeldError.message` copy for outcomes that read the same whatever the provider, so a decline from
+/// Banxa, Stripe or a hosted Apple Pay page tells the customer the same thing. Providers rarely hand the
+/// client a decline reason (Banxa's Primer account reports only FAILED), so the copy names the most
+/// common cause and what to do about it; the provider's own code stays in `detail`.
+enum MeldErrorMessage {
+    static let paymentRejected = "This payment was declined. Some banks block crypto purchases on credit cards, "
+        + "so try a debit card or another payment method."
+    static let paymentOutcomeUnknown = "The payment outcome is not known yet. Track the existing order without paying again."
+
+    /// The shared copy for `code`, or nil when the adapter's own message says more.
+    static func standard(for code: String) -> String? {
+        switch code {
+        case MeldErrorCode.paymentRejected: return paymentRejected
+        case MeldErrorCode.paymentOutcomeUnknown: return paymentOutcomeUnknown
+        default: return nil
+        }
+    }
+}

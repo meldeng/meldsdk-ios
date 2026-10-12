@@ -95,16 +95,18 @@ final class StripePaymentSession: MeldProviderSession {
 
     static func events(for outcome: StripeFlowController.Outcome, mayHaveFinancialAttempt: Bool, orderId: String) -> [MeldEvent] {
         let pending = MeldEvent.statusChange(MeldStatusChange(orderId: orderId, status: .pending, providerStatus: nil, raw: nil))
-        let declined = { (detail: String) in
+        let declined = { (message: String, detail: String) in
             MeldEvent.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
-                message: "The payment was declined. Choose another payment option.", detail: detail, recoverable: false))
+                message: message, detail: detail, recoverable: false))
         }
         switch outcome {
         case .cancelled: return [.cancel]
         case .completed: return [.statusChange(MeldStatusChange(orderId: orderId, status: .completed, providerStatus: nil, raw: nil))]
         case .submitted: return [pending, .paymentSubmitted]
-        case .rejected: return [declined("submission:FAILED")]
-        case let .refused(refusal): return [declined(refusal.rawValue)]
+        case .rejected: return [declined(MeldErrorMessage.paymentRejected, "submission:FAILED")]
+        // Refused at create, before any card was charged: the provider's risk check, not the bank.
+        case let .refused(refusal):
+            return [declined("The payment was declined. Choose another payment option.", refusal.rawValue)]
         case .expired:
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
                 message: "The payment expired before it completed. Choose another payment option.", detail: "submission:EXPIRED",
@@ -118,7 +120,7 @@ final class StripePaymentSession: MeldProviderSession {
                 message: "The provider is reviewing the customer's verification. No payment was attempted.", recoverable: false))]
         case .pending, .verificationPending:
             return [pending, .error(MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
-                message: "The payment outcome is not known yet. Track the existing order without paying again.", recoverable: false))]
+                message: MeldErrorMessage.paymentOutcomeUnknown, recoverable: false))]
         }
     }
 

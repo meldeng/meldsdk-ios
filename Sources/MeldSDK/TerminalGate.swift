@@ -99,7 +99,7 @@ final class TerminalGate {
         guard !terminalDelivered, !released else { return nil }
         if failedSeen {
             return MeldError(orderId: orderId, code: MeldErrorCode.paymentRejected,
-                             message: "The payment failed. Choose another payment option.",
+                             message: MeldErrorMessage.paymentRejected,
                              detail: "session_ended", recoverable: false)
         }
         return MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,

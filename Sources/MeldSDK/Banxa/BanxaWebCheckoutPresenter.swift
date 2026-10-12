@@ -272,8 +272,6 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
         let error = detail?["error"] as? [String: Any]
         let origin = ((error?["data"] as? [String: Any])?["error"] as? [String: Any])?["origin"] as? String
         let primerCode = (error?["code"] as? String) ?? (detail?["errorCode"] as? String) ?? "unknown"
-        let message = (error?["message"] as? String) ?? (detail?["errorMessage"] as? String)
-            ?? "The card payment failed."
         let payment = detail?["payment"] as? [String: Any]
         let diagnostics = [
             "banxa_card_failed:\(primerCode)",
@@ -281,10 +279,13 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
             (payment?["id"] as? String).map { "primerPaymentId=\($0)" },
             (error?["diagnosticsId"] as? String).map { "diagnosticsId=\($0)" },
         ].compactMap { $0 }.joined(separator: " ")
+        let code = origin == "payment" ? MeldErrorCode.paymentRejected : MeldErrorCode.paymentOutcomeUnknown
         return MeldError(
             orderId: orderId,
-            code: origin == "payment" ? MeldErrorCode.paymentRejected : MeldErrorCode.paymentOutcomeUnknown,
-            message: message,
+            code: code,
+            // Primer's wording ("The payment X was created but failed to be processed") is for developers;
+            // its code and ids are in `detail`.
+            message: MeldErrorMessage.standard(for: code) ?? "The card payment failed.",
             detail: diagnostics,
             // A new order is needed: the client token is bound to one checkout session.
             recoverable: false)
