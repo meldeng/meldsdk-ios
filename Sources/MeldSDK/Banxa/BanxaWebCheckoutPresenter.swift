@@ -247,8 +247,10 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
             return [.paymentSubmitted]
         case "payment-cancel":
             return [.cancel]
-        case "payment-failure", "error":
-            return [.error(errorFrom(providerMessage, orderId: orderId))]
+        case "payment-failure":
+            return [.error(paymentFailure(providerMessage, orderId: orderId))]
+        case "error":
+            return [.error(checkoutFailure(providerMessage, orderId: orderId))]
         case "card-error":
             // Inline field validation (a mistyped CVV, an incomplete expiry). Primer renders these in
             // its own form and the user can correct them, so surfacing them as MeldError would fire
@@ -260,14 +262,44 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
         }
     }
 
-    private static func errorFrom(_ providerMessage: [String: Any], orderId: String?) -> MeldError {
+    /// Primer's `payment-failure` detail is `{error:{code,message,diagnosticsId?,data:{error:{origin}}},
+    /// payment:{id,orderId}}`. Primer raises it with origin `payment` only when the payment it created
+    /// came back FAILED or CHECKOUT_FAILURE, i.e. declined; every other origin (network, an
+    /// unhandled PENDING, an inconsistent state) may still leave a live payment behind. The same split
+    /// `BanxaApplePayAdapter` makes, so Banxa card and Apple Pay declines read alike to an integrator.
+    private static func paymentFailure(_ providerMessage: [String: Any], orderId: String?) -> MeldError {
         let detail = providerMessage["detail"] as? [String: Any]
         let error = detail?["error"] as? [String: Any]
-        // Primer's payment-failure detail is {errorCode, errorMessage}; the generic bootstrap error
-        // path uses {error:{code,message}}. Accept both rather than losing the reason.
-        let code = (error?["code"] as? String) ?? (detail?["errorCode"] as? String) ?? "error"
+        let origin = ((error?["data"] as? [String: Any])?["error"] as? [String: Any])?["origin"] as? String
+        let primerCode = (error?["code"] as? String) ?? (detail?["errorCode"] as? String) ?? "unknown"
         let message = (error?["message"] as? String) ?? (detail?["errorMessage"] as? String)
-            ?? "Banxa checkout error"
-        return MeldError(orderId: orderId, code: code, message: message, detail: nil, recoverable: false)
+            ?? "The card payment failed."
+        let payment = detail?["payment"] as? [String: Any]
+        let diagnostics = [
+            "banxa_card_failed:\(primerCode)",
+            origin.map { "origin=\($0)" },
+            (payment?["id"] as? String).map { "primerPaymentId=\($0)" },
+            (error?["diagnosticsId"] as? String).map { "diagnosticsId=\($0)" },
+        ].compactMap { $0 }.joined(separator: " ")
+        return MeldError(
+            orderId: orderId,
+            code: origin == "payment" ? MeldErrorCode.paymentRejected : MeldErrorCode.paymentOutcomeUnknown,
+            message: message,
+            detail: diagnostics,
+            // A new order is needed: the client token is bound to one checkout session.
+            recoverable: false)
+    }
+
+    /// The bootstrap's own `error` messages: the SDK bundle did not load, the component did not mount,
+    /// or Primer refused the client token (`checkout-error`). The card form never accepted a payment.
+    private static func checkoutFailure(_ providerMessage: [String: Any], orderId: String?) -> MeldError {
+        let error = (providerMessage["detail"] as? [String: Any])?["error"] as? [String: Any]
+        let code = (error?["code"] as? String) ?? "unknown"
+        return MeldError(
+            orderId: orderId,
+            code: MeldErrorCode.presentationFailed,
+            message: (error?["message"] as? String) ?? "Banxa checkout failed to load.",
+            detail: "banxa_card_failed:\(code)",
+            recoverable: false)
     }
 }
