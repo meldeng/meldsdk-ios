@@ -152,16 +152,65 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertTrue(events("state-change").isEmpty)
     }
 
-    func testPaymentFailureCarriesPrimerErrorCodeAndMessage() {
-        // Primer's payment-failure detail is {errorCode, errorMessage}, not {error:{code,message}}.
-        let events = BanxaWebCheckoutPresenter.interpret(
-            providerMessage: ["type": "payment-failure",
-                              "detail": ["errorCode": "card_declined", "errorMessage": "Card was declined"]],
-            orderId: "order-1")
-        guard case .error(let meldError)? = events.first else { return XCTFail("expected error") }
-        XCTAssertEqual(meldError.code, "card_declined")
-        XCTAssertEqual(meldError.message, "Card was declined")
-        XCTAssertEqual(meldError.orderId, "order-1")
+    /// The `banxa:payment-failure` detail captured from a live production decline (test Visa, 3DS
+    /// skipped, Primer payment FAILED / CHECKOUT_FAILURE), trimmed to the fields the mapping reads.
+    private func primerFailure(origin: String?, paymentId: String? = "KiLILEZlP",
+                               diagnosticsId: String? = nil) -> [String: Any] {
+        var error: [String: Any] = ["code": "PAYMENT_FAILED",
+                                    "message": "The payment \"KiLILEZlP\" was created but failed to be processed."]
+        if let origin { error["data"] = ["error": ["name": "SdkError", "origin": origin, "code": "PAYMENT_FAILED"]] }
+        if let diagnosticsId { error["diagnosticsId"] = diagnosticsId }
+        var detail: [String: Any] = ["error": error, "paymentMethodType": "PAYMENT_CARD"]
+        if let paymentId { detail["payment"] = ["id": paymentId, "orderId": "01a13056d9c875bfb148fb1ec2cad016"] }
+        return ["type": "payment-failure", "detail": detail]
+    }
+
+    private func meldError(_ message: [String: Any]) -> MeldError? {
+        guard case .error(let error)? = BanxaWebCheckoutPresenter.interpret(providerMessage: message, orderId: "order-1").first
+        else { return nil }
+        return error
+    }
+
+    func testADeclinedPaymentIsRejectedSoTheIntegratorCanSayItWasDeclined() throws {
+        let error = try XCTUnwrap(meldError(primerFailure(origin: "payment", diagnosticsId: "diag-1")))
+        XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
+        XCTAssertFalse(error.attemptMayExist)
+        XCTAssertFalse(error.recoverable)
+        XCTAssertEqual(error.orderId, "order-1")
+        XCTAssertEqual(error.message, "The payment \"KiLILEZlP\" was created but failed to be processed.")
+    }
+
+    func testAFailureDetailKeepsPrimersCodeOriginPaymentIdAndDiagnosticsId() throws {
+        let error = try XCTUnwrap(meldError(primerFailure(origin: "payment", diagnosticsId: "diag-1")))
+        XCTAssertEqual(error.detail,
+                       "banxa_card_failed:PAYMENT_FAILED origin=payment primerPaymentId=KiLILEZlP diagnosticsId=diag-1")
+    }
+
+    func testAFailureNotRaisedByThePaymentMayStillHaveAnAttempt() throws {
+        // Primer raises origin `primer` for a PENDING payment it cannot drive and `network` for a
+        // request that failed in flight: a payment may exist, so the order must be tracked, not retried.
+        for origin in ["primer", "network", nil] as [String?] {
+            let error = try XCTUnwrap(meldError(primerFailure(origin: origin)))
+            XCTAssertEqual(error.code, MeldErrorCode.paymentOutcomeUnknown, "origin \(origin ?? "nil")")
+            XCTAssertTrue(error.attemptMayExist)
+        }
+    }
+
+    func testAFailureWithoutAnErrorObjectIsTreatedAsUnknown() throws {
+        let error = try XCTUnwrap(meldError(["type": "payment-failure", "detail": [:] as [String: Any]]))
+        XCTAssertEqual(error.code, MeldErrorCode.paymentOutcomeUnknown)
+        XCTAssertEqual(error.detail, "banxa_card_failed:unknown")
+    }
+
+    func testACheckoutThatNeverLoadedIsAPresentationFailure() throws {
+        for code in ["checkout_init_failed", "sdk_unavailable", "mount_failed"] {
+            let error = try XCTUnwrap(meldError(["type": "error",
+                                                 "detail": ["error": ["code": code, "message": "boom"]]]))
+            XCTAssertEqual(error.code, MeldErrorCode.presentationFailed)
+            XCTAssertFalse(error.attemptMayExist)
+            XCTAssertEqual(error.detail, "banxa_card_failed:\(code)")
+            XCTAssertEqual(error.message, "boom")
+        }
     }
 
     // MARK: - Vendored bundle
