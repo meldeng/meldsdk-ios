@@ -9,12 +9,12 @@ import UIKit
 /// `headless_order` row to correlate, and it requires Banxa credentials on the device. That leaves
 /// two presenters for the same token:
 ///
+/// - ``BanxaNativeCheckoutPresenter`` — Primer's own iOS SDK, which completes a payment on an order
+///   that already exists. A true native sheet, native 3DS, no vendored bundle, and the path Banxa's own
+///   mobile SDKs take. What card ships on.
 /// - ``BanxaWebCheckoutPresenter`` — Banxa's `<banxa-primer-checkout>` web component, run inside the
-///   shared `WebViewHost`. Works today, and is what card ships on.
-/// - a Primer-native presenter — Primer's own iOS SDK, which completes a payment on an order that
-///   already exists. A true native sheet, native 3DS, no vendored bundle, and the only route that
-///   can present **Apple Pay**: the web component cannot, because Apple Pay on the Web requires the
-///   page origin to be a registered Apple Pay domain and the bootstrap page's origin is not ours.
+///   shared `WebViewHost`. Kept behind the seam; it cannot present Apple Pay, because Apple Pay on the
+///   Web requires the page origin to be a registered Apple Pay domain and the bootstrap page's is not.
 ///
 /// Keeping the choice behind this protocol means adding the native presenter is one new file plus a
 /// dependency, with the working web path untouched — rather than a rewrite of the adapter, its

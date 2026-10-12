@@ -14,7 +14,7 @@ final class PresentationPreflightTests: XCTestCase {
             ("APPLE_PAY", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP", "native-sdk", false),
             ("CREDIT_DEBIT_CARD", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP", "native-sdk", false),
             ("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "MERCURYO_WIDGET", "embedded", true),
-            ("CREDIT_DEBIT_CARD", "VENDOR_SDK", "BANXA_CHECKOUT", "embedded", true),
+            ("CREDIT_DEBIT_CARD", "VENDOR_SDK", "BANXA_CHECKOUT", "native-sdk", false),
             ("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET", "embedded", true),
         ]
         for (method, surface, protocolName, expectedSurface, embeddable) in examples {

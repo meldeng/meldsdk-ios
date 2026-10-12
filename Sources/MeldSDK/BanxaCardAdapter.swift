@@ -6,19 +6,19 @@ import UIKit
 /// provider URL to load — the capture surface is built on the device from the token alone, which
 /// makes this the first adapter with no `serviceProviderWidgetUrl`.
 ///
-/// Rendering runs Banxa's own `<banxa-primer-checkout>` web component (which wraps Primer's Checkout
-/// Web SDK) inside the reused `WebViewHost`, the same shape as `UpholdCardAdapter`. That is Banxa's
-/// documented order-first integration: the component takes only a client token, so no Banxa API
-/// credential ever reaches the device. Banxa's *native* iOS SDK is deliberately not used — it creates
-/// its own order inside `startPayment`, which would bypass Meld's order lifecycle entirely (no
-/// `headless_order` row, nothing for the webhook to correlate, quote and routing skipped).
+/// Rendering uses Primer's native card form (``BanxaNativeCheckoutPresenter``), the path Banxa's own
+/// mobile SDKs take with the same token. Banxa's SDKs themselves are deliberately not used — they create
+/// their own order, which would bypass Meld's order lifecycle entirely (no `headless_order` row,
+/// nothing for the webhook to correlate, quote and routing skipped) — but the token-only presentation
+/// is theirs, so no Banxa API credential ever reaches the device. ``BanxaWebCheckoutPresenter`` (Banxa's
+/// `<banxa-primer-checkout>` web component in `WebViewHost`) remains available behind the same seam.
 struct BanxaCardAdapter: MeldAdapter {
     let label = "Banxa card (CREDIT_DEBIT_CARD / IFRAME, SDK token)"
-    /// How the capture surface is presented. Injected so the native (Primer SDK) presenter can be
-    /// swapped in without touching selection or event mapping — see `BanxaCheckoutPresenter`.
+    /// How the capture surface is presented. Injected so presenters can be swapped without touching
+    /// selection or event mapping — see `BanxaCheckoutPresenter`.
     let presenter: BanxaCheckoutPresenter
 
-    init(presenter: BanxaCheckoutPresenter = BanxaWebCheckoutPresenter()) {
+    init(presenter: BanxaCheckoutPresenter = BanxaNativeCheckoutPresenter()) {
         self.presenter = presenter
     }
 
@@ -47,7 +47,7 @@ struct BanxaCardAdapter: MeldAdapter {
             && order.paymentMethodResponseDetails?.renderMode == "IFRAME"
     }
 
-    /// Headless card: Primer's fields render in place from the order's client token
+    /// Headless card: Primer's card form is presented from the order's client token
     /// (`sdkSessionToken`), which Banxa returns as `nativeToken` for merchants provisioned for native
     /// payments.
     ///
