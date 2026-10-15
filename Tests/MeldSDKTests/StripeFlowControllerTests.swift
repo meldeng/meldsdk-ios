@@ -90,6 +90,33 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testAPrefilledSsnCompletesInitialKycWithoutAForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: FlowHarness.allIdentityFields),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.idNumber, "601230102")
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertEqual(attached.birthYear, 1990); XCTAssertNotNil(attached.address)
+        await h.flow.close()
+    }
+
+    func testARejectedPrefilledSsnIsNeverResent() async throws {
+        let h = try FlowHarness()
+        let missing = FlowHarness.allIdentityFields
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [[]], "after a rejection the customer sees every field")
+        XCTAssertEqual(h.driver.attached.map(\.idNumber), ["601230102", nil], "only the form's values go after a rejection")
+        await h.flow.close()
+    }
+
     func testFullyCoveredIdentityIsSubmittedWithoutAForm() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
@@ -228,6 +255,22 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION", "PREPARE_CUSTOMER_AUTHORIZATION", "COMPLETE_CUSTOMER_LINK",
             "READ_CUSTOMER_STATUS", "READ_LIMITS", "READ_CUSTOMER_STATUS", "READ_LIMITS", "CREATE_PAYMENT_SESSION", "CONFIRM_PAYMENT", "READ_SUBMISSION"])
         XCTAssertTrue(h.client.calls.filter { $0.operation == "READ_LIMITS" }.allSatisfy { $0.key == nil && $0.fields.isEmpty })
+        await h.flow.close()
+    }
+
+    func testAnOrderOverAnL0CustomersLimitsStepsUpWithThePrefilledSsnWithoutAForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer(tier: "L0"), FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(),
+             FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        h.client.limits = [FlowHarness.limits("SDK_COLLECT_KYC")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.idNumber, "601230102")
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertEqual(attached.birthMonth, 3); XCTAssertEqual(attached.birthDay, 15)
+        XCTAssertNil(attached.firstName); XCTAssertNil(attached.address)
         await h.flow.close()
     }
 
@@ -1076,6 +1119,9 @@ private final class FlowHarness {
     }
     static let sumsubPrefill: [String: Any] = ["email": "buyer@example.test", "identity": [
         "firstName": "Ada", "lastName": "Lovelace", "dateOfBirth": "1990-03-15",
+        "address": ["line1": "1 Market St", "city": "San Francisco", "state": "CA", "postalCode": "94105", "country": "US"]]]
+    static let sumsubPrefillWithSsn: [String: Any] = ["email": "buyer@example.test", "identity": [
+        "firstName": "Ada", "lastName": "Lovelace", "dateOfBirth": "1990-03-15", "ssn": "601230102",
         "address": ["line1": "1 Market St", "city": "San Francisco", "state": "CA", "postalCode": "94105", "country": "US"]]]
     static let allIdentityFields = ["FIRST_NAME", "LAST_NAME", "DATE_OF_BIRTH", "ID_NUMBER", "ADDRESS_LINE_1",
                                     "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]

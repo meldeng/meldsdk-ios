@@ -39,6 +39,18 @@ final class StripeActionResponseTests: XCTestCase {
         XCTAssertNil(try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP"]).prefill)
     }
 
+    func testPrefillCarriesOnlyANineDigitSsn() throws {
+        func identity(_ ssn: Any) throws -> StripeIdentityInput? {
+            try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": [
+                "email": "buyer@example.test", "identity": ["ssn": ssn]]]).prefill?.identity
+        }
+        XCTAssertEqual(try identity("601230102")?.idNumber, "601230102")
+        XCTAssertFalse(String(describing: try XCTUnwrap(try identity("601230102"))).contains("601230102"))
+        for invalid: Any in ["60123010", "6012301020", "601-23-0102", "X1234567L", "", 601230102] {
+            XCTAssertNil(try identity(invalid), "\(invalid)")
+        }
+    }
+
     func testTypedPhoneNumbersBecomeE164AndOtherFieldsAreOnlyTrimmed() {
         XCTAssertEqual(StripeFormField.phone.normalized("(415) 555-0123"), "+14155550123")
         XCTAssertEqual(StripeFormField.phone.normalized("1 415 555 0123"), "+14155550123")
