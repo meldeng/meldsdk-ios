@@ -1,6 +1,6 @@
 import Foundation
 
-/// Customer data Meld already holds. The flow submits it instead of asking; it never carries an ID number.
+/// Customer data Meld already holds. The flow submits it instead of asking; the SSN comes only for a US KYC TIN.
 ///
 /// Optional data: a field this SDK cannot use is dropped and asked for instead, and only an unusable
 /// email (the one Meld authorizes with Link) drops the whole prefill. Neither invalidates the response.
@@ -29,7 +29,9 @@ struct StripePrefill: CustomStringConvertible {
             identity.birthDay = birthday.day; identity.birthMonth = birthday.month; identity.birthYear = birthday.year
         }
         identity.address = value["address"].flatMap(address)
+        if let ssn = value["ssn"] as? String, StripeNativeValue.matches(ssn, "[0-9]{9}") { identity.idNumber = ssn }
         let empty = identity.firstName == nil && identity.lastName == nil && identity.birthYear == nil && identity.address == nil
+            && identity.idNumber == nil
         return empty ? nil : identity
     }
 

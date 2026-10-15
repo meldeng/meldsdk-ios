@@ -190,6 +190,7 @@ final class StripeFlowController {
             case "FIRST_NAME": return known.firstName != nil
             case "LAST_NAME": return known.lastName != nil
             case "DATE_OF_BIRTH": return known.birthYear != nil
+            case "ID_NUMBER": return known.idNumber != nil
             default: return $0.hasPrefix("ADDRESS_") && known.address != nil
             }
         }
@@ -200,6 +201,7 @@ final class StripeFlowController {
         if wanted.contains("DATE_OF_BIRTH"), covered("DATE_OF_BIRTH") {
             input.birthDay = known.birthDay; input.birthMonth = known.birthMonth; input.birthYear = known.birthYear
         }
+        if wanted.contains("ID_NUMBER"), covered("ID_NUMBER") { input.idNumber = known.idNumber }
         if let field = wanted.first(where: { $0.hasPrefix("ADDRESS_") }), covered(field) { input.address = known.address }
         submittedPrefill.formUnion(wanted.filter(covered).map(Self.prefillKey))
         return input
