@@ -73,7 +73,7 @@ final class HostedLinkApplePayTests: XCTestCase {
         XCTAssertTrue(errors.isEmpty, "the error follows mount, never inside it")
         XCTAssertEqual(root.view.subviews.count, subviews, "no page is loaded")
         wait(for: [reported], timeout: 1)
-        XCTAssertEqual(errors.map(\.code), ["APPLE_PAY_UNAVAILABLE"])
+        XCTAssertEqual(errors.map(\.code), ["PAYMENT_METHOD_UNAVAILABLE"])
         XCTAssertEqual(errors.first?.message, "Apple Pay is not supported on this device.")
         XCTAssertEqual(errors.first?.recoverable, false)
         XCTAssertEqual(errors.first?.orderId, "o1")
@@ -169,8 +169,8 @@ final class HostedLinkApplePayTests: XCTestCase {
 
     func testEveryPageErrorMapsToANormalizedTerminalCode() {
         let table: [(event: String, providerCode: String?, code: String)] = [
-            ("onramp_api.load_error", "ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED", "APPLE_PAY_UNAVAILABLE"),
-            ("onramp_api.load_error", "ERROR_CODE_GUEST_APPLE_PAY_NOT_SETUP", "APPLE_PAY_UNAVAILABLE"),
+            ("onramp_api.load_error", "ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED", "PAYMENT_METHOD_UNAVAILABLE"),
+            ("onramp_api.load_error", "ERROR_CODE_GUEST_APPLE_PAY_NOT_SETUP", "PAYMENT_METHOD_UNAVAILABLE"),
             ("onramp_api.load_error", "ERROR_CODE_INIT", "ORDER_STATE_CHANGED"),
             ("onramp_api.error", "ERROR_CODE_INIT", "ORDER_STATE_CHANGED"),
             ("onramp_api.load_error", "ERROR_CODE_SOMETHING_ELSE", "PRESENTATION_FAILED"),
@@ -447,7 +447,7 @@ final class HostedLinkApplePayTests: XCTestCase {
 
         h.send("onramp_api.load_error", data: #"{"errorCode":"ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED"}"#)
 
-        XCTAssertEqual(h.log, ["ready", "error:APPLE_PAY_UNAVAILABLE", "unmount"])
+        XCTAssertEqual(h.log, ["ready", "error:PAYMENT_METHOD_UNAVAILABLE", "unmount"])
         XCTAssertEqual(h.recorder.errors.first?.detail, "onramp_api.load_error:ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED")
     }
 
@@ -469,11 +469,11 @@ final class HostedLinkApplePayTests: XCTestCase {
     func testAPageLoadFailureAfterTheClickIsAnUnknownOutcome() throws {
         let h = try presentedHarness()
 
-        h.session.pageFailed(MeldError(orderId: "o1", code: "NAVIGATION_FAILED", message: "offline",
+        h.session.pageFailed(MeldError(orderId: "o1", code: "PROVIDER_LOAD_FAILED", message: "offline",
                                        detail: "NSURLErrorDomain #-1009", recoverable: false))
 
         XCTAssertEqual(h.log, ["ready", "error:PAYMENT_OUTCOME_UNKNOWN", "unmount"])
-        XCTAssertEqual(h.recorder.errors.first?.detail, "NAVIGATION_FAILED:NSURLErrorDomain #-1009")
+        XCTAssertEqual(h.recorder.errors.first?.detail, "PROVIDER_LOAD_FAILED:NSURLErrorDomain #-1009")
     }
 
     func testSubmissionIsPendingThenSubmittedAndLaterPollingIsDroppedThenSettles() throws {
@@ -733,6 +733,21 @@ final class HostedLinkApplePayTests: XCTestCase {
         host.evaluateJavaScript("'x'") { results.append($0 as? String) }
 
         XCTAssertEqual(results, [nil])
+    }
+
+    func testEveryPageLoadFailureIsAProviderLoadFailureThatEndsTheMountOnceThePageHasStarted() throws {
+        var errors: [MeldError] = []
+        let host = WebViewHost(url: try XCTUnwrap(URL(string: "https://pay.coinbase.com/buy")), orderId: "o1",
+                               handlers: MeldEventHandlers(onError: { errors.append($0) }), interpret: { _ in [] })
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+
+        host.webView(WKWebView(), didFailProvisionalNavigation: nil, withError: offline)
+        host.webView(WKWebView(), didFail: nil, withError: offline)
+
+        XCTAssertEqual(errors.map(\.code), [MeldErrorCode.providerLoadFailed, MeldErrorCode.providerLoadFailed])
+        XCTAssertEqual(errors.map(\.recoverable), [true, false])
+        XCTAssertEqual(errors.map(\.detail), ["NSURLErrorDomain #-1009", "NSURLErrorDomain #-1009"])
+        XCTAssertEqual(errors.map(\.attemptMayExist), [true, true])
     }
 
     func testContentProcessTerminationIsReportedOnlyWhenAsked() throws {

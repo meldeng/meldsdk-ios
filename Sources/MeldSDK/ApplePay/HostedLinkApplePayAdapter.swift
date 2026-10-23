@@ -61,6 +61,8 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
         return order.hasCompatibleLegacyPresentation("PROVIDER_HOSTED") && Self.hasSupportedLink(order)
     }
 
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks? { .providerSet }
+
     func matches(_ order: MeldOrder) -> Bool {
         guard order.paymentMethodType == "APPLE_PAY", order.presentation == .providerHosted else {
             return false
@@ -173,7 +175,7 @@ struct HostedLinkApplePayAdapter: MeldAdapter {
     private static func errorCode(_ eventName: String, providerCode: String?) -> String {
         switch (eventName, providerCode) {
         case (_, "ERROR_CODE_GUEST_APPLE_PAY_NOT_SUPPORTED"), (_, "ERROR_CODE_GUEST_APPLE_PAY_NOT_SETUP"):
-            return MeldErrorCode.applePayUnavailable
+            return MeldErrorCode.paymentMethodUnavailable
         case (_, "ERROR_CODE_INIT"):
             return MeldErrorCode.orderStateChanged
         case ("onramp_api.commit_error", _):
@@ -295,7 +297,7 @@ final class HostedLinkApplePaySession: MeldProviderSession, DetachedSurface {
     func deviceUnavailable(_ reason: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.handle(.error(MeldError(orderId: self.orderId, code: MeldErrorCode.applePayUnavailable,
+            self.handle(.error(MeldError(orderId: self.orderId, code: MeldErrorCode.paymentMethodUnavailable,
                                          message: reason, recoverable: false)))
         }
     }

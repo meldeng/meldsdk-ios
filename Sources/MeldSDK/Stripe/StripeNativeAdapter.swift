@@ -11,6 +11,10 @@ struct StripeNativeAdapter: MeldAdapter {
     func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool { (try? StripeNativeOrder(order, environment: Meld.environment)) != nil }
     func matches(_ order: MeldOrder) -> Bool { false }
 
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks? {
+        paymentMethodType == "APPLE_PAY" ? .requested(StripeNativeOrder.applePayNetworks) : nil
+    }
+
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard Thread.isMainThread else { throw StripeNativeError.unavailable }
         let native = try StripeNativeOrder(order, environment: Meld.environment)

@@ -85,9 +85,14 @@ struct MeldAdapterRegistry {
         self.declared = declared
     }
 
+    /// Every registered presentation, in registration order.
+    var presentations: [MeldAdapterPresentation] { adapters.flatMap(\.presentations) }
+
+    func adapter(for presentation: MeldAdapterPresentation) -> MeldAdapter? { declared[presentation] }
+
     func adapter(for presentation: MeldHeadlessPresentation, paymentMethodType: String) -> MeldAdapter? {
-        declared[MeldAdapterPresentation(paymentMethodType, presentation.surface, presentation.protocolName,
-                                        version: presentation.version)]
+        adapter(for: MeldAdapterPresentation(paymentMethodType, presentation.surface, presentation.protocolName,
+                                             version: presentation.version))
     }
 
     func adapter(for order: MeldOrder) -> MeldAdapter? {

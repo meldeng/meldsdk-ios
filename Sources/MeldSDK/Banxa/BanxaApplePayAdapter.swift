@@ -52,6 +52,8 @@ struct BanxaApplePayAdapter: MeldAdapter {
             && ((details?["sessionToken"] as? String) ?? (details?["sdkSessionToken"] as? String))?.isEmpty == false
     }
 
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks? { .providerSet }
+
     func matches(_ order: MeldOrder) -> Bool {
         order.serviceProvider == "BANXA"
             && order.paymentMethodType == "APPLE_PAY"
@@ -64,14 +66,14 @@ struct BanxaApplePayAdapter: MeldAdapter {
         guard let clientToken = (details?["sessionToken"] as? String) ?? details?["sdkSessionToken"] as? String,
               !clientToken.isEmpty
         else {
-            throw MeldApplePayError.invalidOrder(
+            throw MeldMountError.invalidOrder(
                 "Banxa Apple Pay order is missing sessionToken, the Primer client token the sheet is presented from.")
         }
         // Apple encrypts the wallet payload for exactly one Payment Processing Certificate, and the
         // one Primer holds for Banxa is bound to this identifier. Without it Primer cannot build a
         // PKPaymentRequest, so fail here with the reason rather than let the sheet fail opaquely.
         guard let merchantIdentifier = nonEmpty(details?["merchantIdentifier"] as? String) else {
-            throw MeldApplePayError.invalidOrder(
+            throw MeldMountError.invalidOrder(
                 "Banxa Apple Pay order is missing merchantIdentifier. It is configured per account "
                     + "under the provider's own key; an account without one cannot present Apple Pay.")
         }
@@ -208,6 +210,9 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
 
     private static func code(for error: Error, checkoutData: PrimerCheckoutData?, presented: Bool) -> String {
         let id = errorId(error)
+        if id.map(walletUnavailableErrorIds.contains) == true {
+            return MeldErrorCode.paymentMethodUnavailable
+        }
         if !presented || id.map(sheetNotShownErrorIds.contains) == true {
             return MeldErrorCode.presentationFailed
         }
@@ -217,11 +222,14 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
         return MeldErrorCode.paymentOutcomeUnknown
     }
 
+    private static let walletUnavailableErrorIds: Set<String> = [
+        "apple-pay-device-not-supported",
+        "apple-pay-no-cards-in-wallet",
+    ]
+
     private static let sheetNotShownErrorIds: Set<String> = [
         "unable-to-present-apple-pay",
         "apple-pay-presentation-failed",
-        "apple-pay-device-not-supported",
-        "apple-pay-no-cards-in-wallet",
         "apple-pay-configuration-error",
     ]
 

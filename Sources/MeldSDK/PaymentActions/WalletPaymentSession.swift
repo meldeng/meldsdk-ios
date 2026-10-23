@@ -1,5 +1,8 @@
 import Foundation
 
+/// Thrown by a sheet factory when this device cannot pay with the order's method.
+struct PaymentMethodUnavailable: Error {}
+
 /// Shared order lifecycle; adapters supply wallet and hosted surfaces, never financial retry policy.
 /// Like the SDK's UI callbacks, all calls to this session run on the main thread.
 final class WalletPaymentSession: MeldProviderSession {
@@ -87,11 +90,18 @@ final class WalletPaymentSession: MeldProviderSession {
                     return
                 }
                 sheetActive = true
-                try install {
-                    try sheetFactory({ [weak self] payment, completion in
-                        guard let self, self.active else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
-                        self.submit(payment, completion: completion)
-                    }, { [weak self] in self?.sheetFinished() })
+                do {
+                    try install {
+                        try sheetFactory({ [weak self] payment, completion in
+                            guard let self, self.active else { completion(ApplePayProcessOutcome(events: [], succeeded: false)); return }
+                            self.submit(payment, completion: completion)
+                        }, { [weak self] in self?.sheetFinished() })
+                    }
+                } catch is PaymentMethodUnavailable {
+                    fail(MeldErrorCode.paymentMethodUnavailable, "Apple Pay is not available on this device or for this user.")
+                } catch {
+                    fail(MeldErrorCode.presentationFailed, "The payment sheet could not be presented. No payment was attempted.",
+                         detail: "PAYMENT_CONTINUATION_UNAVAILABLE")
                 }
             case .submitted:
                 pendingStatus()
@@ -138,8 +148,6 @@ final class WalletPaymentSession: MeldProviderSession {
             case .failed:
                 fail("PAYMENT_REJECTED", "The payment attempt failed. Review the order before starting another payment.")
             }
-        } catch MeldApplePayError.unavailable {
-            fail(MeldErrorCode.applePayUnavailable, "Apple Pay is not available on this device or for this user.")
         } catch {
             fail("PAYMENT_CONTINUATION_UNAVAILABLE", "The existing order cannot be continued on this device right now.")
         }
@@ -155,7 +163,8 @@ final class WalletPaymentSession: MeldProviderSession {
             key = try store.claimSubmission()
         } catch {
             completion(ApplePayProcessOutcome(events: [], succeeded: false))
-            fail("PAYMENT_NOT_SUBMITTED", "Payment details or attempt state could not be validated. Review the existing order.")
+            let error = WalletPayment.notSubmitted(error, orderId: orderID)
+            fail(error.code, error.message, detail: error.detail)
             return
         }
         submitting = true
@@ -205,9 +214,9 @@ final class WalletPaymentSession: MeldProviderSession {
         handlers.onStatusChange?(MeldStatusChange(orderId: orderID, status: .pending, providerStatus: nil, raw: nil))
     }
 
-    private func fail(_ code: String, _ message: String) {
+    private func fail(_ code: String, _ message: String, detail: String? = nil) {
         guard active else { return }
         unmount()
-        handlers.onError?(MeldError(orderId: orderID, code: code, message: message, recoverable: false))
+        handlers.onError?(MeldError(orderId: orderID, code: code, message: message, detail: detail, recoverable: false))
     }
 }

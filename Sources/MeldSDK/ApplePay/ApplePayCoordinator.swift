@@ -134,10 +134,10 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         finishSheet()
     }
 
-    private func reject(_ code: String, _ message: String,
+    private func reject(_ detail: String, _ message: String,
                         _ completion: (PKPaymentAuthorizationResult) -> Void) {
         completion(PKPaymentAuthorizationResult(status: .failure, errors: nil))
-        emitError(code: code, message: message)
+        emitError(code: MeldErrorCode.presentationFailed, message: message, detail: detail)
         finishSheet()
     }
 
@@ -151,14 +151,14 @@ final class ApplePayCoordinator: NSObject, PKPaymentAuthorizationControllerDeleg
         }
     }
 
-    private func emitError(code: String, message: String) {
+    private func emitError(code: String, message: String, detail: String? = nil) {
         guard active else { return }
-        handlers.onError?(MeldError(orderId: orderId, code: code, message: message, recoverable: false))
+        handlers.onError?(MeldError(orderId: orderId, code: code, message: message, detail: detail, recoverable: false))
     }
 
     private func presentationFailed() {
         controller = nil
-        emitError(code: MeldErrorCode.applePayUnavailable, message: "Apple Pay is not available on this device.")
+        emitError(code: MeldErrorCode.paymentMethodUnavailable, message: "Apple Pay is not available on this device.")
         if closing { cleanup() } else { finishSheet() }
     }
 

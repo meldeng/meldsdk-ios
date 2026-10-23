@@ -218,8 +218,18 @@ final class BanxaCardAdapterTests: XCTestCase {
         XCTAssertEqual(error.detail, "banxa_card_failed:unknown")
     }
 
-    func testACheckoutThatNeverLoadedIsAPresentationFailure() throws {
-        for code in ["checkout_init_failed", "sdk_unavailable", "mount_failed"] {
+    func testACheckoutSdkThatDidNotLoadIsAProviderLoadFailure() throws {
+        let error = try XCTUnwrap(meldError(["type": "error",
+                                             "detail": ["error": ["code": "sdk_unavailable", "message": "boom"]]]))
+        XCTAssertEqual(error.code, MeldErrorCode.providerLoadFailed)
+        XCTAssertTrue(error.attemptMayExist)
+        XCTAssertFalse(error.recoverable)
+        XCTAssertEqual(error.detail, "banxa_card_failed:sdk_unavailable")
+        XCTAssertEqual(error.message, "boom")
+    }
+
+    func testACheckoutThatNeverMountedIsAPresentationFailure() throws {
+        for code in ["checkout_init_failed", "mount_failed"] {
             let error = try XCTUnwrap(meldError(["type": "error",
                                                  "detail": ["error": ["code": code, "message": "boom"]]]))
             XCTAssertEqual(error.code, MeldErrorCode.presentationFailed)

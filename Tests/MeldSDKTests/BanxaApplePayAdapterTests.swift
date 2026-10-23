@@ -205,6 +205,19 @@ final class BanxaApplePayAdapterTests: XCTestCase {
         XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:unable-to-present-apple-pay")
     }
 
+    func testAWalletPrimerCannotPayWithIsAnUnavailableMethod() {
+        let r = Recorder()
+        let session = BanxaPrimerApplePaySession(orderId: "order-1", handlers: r.handlers)
+        session.primerHeadlessUniversalCheckoutDidFail(withError: PrimerError.applePayDeviceNotSupported(), checkoutData: nil)
+        XCTAssertEqual(r.events, ["error:PAYMENT_METHOD_UNAVAILABLE", "ended"])
+        XCTAssertEqual(r.errors.first?.detail, "banxa_apple_pay_failed:apple-pay-device-not-supported")
+        XCTAssertEqual(r.errors.first?.attemptMayExist, false)
+
+        let shown = failAfterTheSheetIsShown(PrimerError.applePayNoCardsInWallet())
+        XCTAssertEqual(shown.events, ["ready", "error:PAYMENT_METHOD_UNAVAILABLE", "ended"])
+        XCTAssertEqual(shown.errors.first?.detail, "banxa_apple_pay_failed:apple-pay-no-cards-in-wallet")
+    }
+
     func testASheetThatNeverAppearsFailsAtThePresentationDeadline() {
         let r = Recorder()
         let deadline = PresentationDeadline(interval: 0.05, notifications: NotificationCenter())

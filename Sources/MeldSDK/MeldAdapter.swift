@@ -53,6 +53,10 @@ protocol MeldAdapter {
     /// Compatibility matcher used only when top-level presentation metadata is absent.
     func matches(_ order: MeldOrder) -> Bool
 
+    /// The Wallet cards a payment with one of this adapter's methods can use, or nil when that method needs no
+    /// Wallet. Readiness asks PassKit about them only while `capabilities` are supported.
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks?
+
     /// Render the order's surface, wiring its lifecycle to `handlers`, and return a session to tear
     /// it down. Throws if the order or `context` lacks what this adapter needs (e.g. a host view
     /// for a widget, or the Apple Pay request for a sheet).

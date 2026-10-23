@@ -36,6 +36,34 @@ final class UpholdCaptureEventsTests: XCTestCase {
         }
     }
 
+    /// The bootstrap's own codes are the shared ones on both steps; the widget's own codes pass through.
+    func testBootstrapFailuresUseTheSharedCodes() throws {
+        func error(_ code: String, capture: Bool) throws -> MeldError {
+            let message: [String: Any] = ["type": "error", "detail": ["error": ["code": code, "message": "boom"]]]
+            let events = capture ? UpholdCardAdapter.interpretCapture(providerMessage: message)
+                : UpholdCardAdapter.interpret(providerMessage: message, orderId: "ord_1")
+            guard case let .error(error)? = events.first else { return try XCTUnwrap(nil as MeldError?, "no error for \(code)") }
+            return error
+        }
+        for capture in [true, false] {
+            let unloaded = try error("sdk_unavailable", capture: capture)
+            XCTAssertEqual(unloaded.code, MeldErrorCode.providerLoadFailed)
+            XCTAssertTrue(unloaded.attemptMayExist)
+            XCTAssertFalse(unloaded.recoverable)
+            XCTAssertEqual(unloaded.detail, "uphold_card_failed:sdk_unavailable")
+            XCTAssertEqual(unloaded.message, "boom")
+
+            let unmounted = try error("mount_failed", capture: capture)
+            XCTAssertEqual(unmounted.code, MeldErrorCode.presentationFailed)
+            XCTAssertFalse(unmounted.attemptMayExist)
+            XCTAssertEqual(unmounted.detail, "uphold_card_failed:mount_failed")
+
+            let widget = try error("card_declined", capture: capture)
+            XCTAssertEqual(widget.code, "card_declined")
+            XCTAssertNil(widget.detail)
+        }
+    }
+
     /// The card selection advances the flow out-of-band, so `complete` is never an event of its own.
     func testCaptureCompleteIsNotSurfaced() {
         let events = UpholdCardAdapter.interpretCapture(providerMessage: ["type": "complete"])

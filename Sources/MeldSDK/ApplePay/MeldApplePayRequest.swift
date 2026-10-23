@@ -1,7 +1,7 @@
 import Foundation
 
 /// Inputs the SDK needs to present a native Apple Pay sheet for an Apple Pay order, beyond what
-/// the order itself carries. The order (`ApplePayOrder`) supplies `merchantIdentifier`,
+/// the order itself carries. The order (`WalletOrder`) supplies `merchantIdentifier`,
 /// `sessionToken`, and `merchantTransactionId`; everything below is what the app already knows
 /// from the quote it created the order against. The SDK uses the order's action descriptor to
 /// submit wallet data and continue any required hosted verification.
@@ -37,31 +37,5 @@ public struct MeldApplePayRequest {
         self.clientIpAddress = clientIpAddress
         self.email = email
         self.summaryItemLabel = summaryItemLabel
-    }
-}
-
-/// Failures specific to presenting native Apple Pay. Distinct from `MeldMountError` because Apple
-/// Pay is a modal native sheet, not a widget mounted into a `UIView`.
-public enum MeldApplePayError: LocalizedError {
-    /// The device/user can't pay with Apple Pay (no card provisioned, restricted, unsupported).
-    case unavailable
-    /// The order isn't an Apple Pay order, or is missing a field the SDK needs from it.
-    case invalidOrder(String)
-    /// The Apple Pay sheet returned without the billing details the provider requires.
-    case missingBillingDetails(String)
-    /// The `/process` call failed at the network/transport layer (not a declined payment).
-    case processingFailed(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .unavailable:
-            return "Apple Pay is not available on this device or for this user."
-        case let .invalidOrder(detail):
-            return detail
-        case let .missingBillingDetails(detail):
-            return detail
-        case let .processingFailed(detail):
-            return detail
-        }
     }
 }

@@ -70,6 +70,11 @@ struct StripeNativeOrder: CustomStringConvertible {
         merchantIdentifier = merchant; self.amount = amount; self.actions = actions
     }
 
+    /// The networks `paymentRequest` asks for: Stripe's, plus any the host app enabled through `StripeAPI`.
+    static var applePayNetworks: [PKPaymentNetwork] {
+        StripeAPI.paymentRequest(withMerchantIdentifier: "merchant.io.meld", country: "US", currency: "USD").supportedNetworks
+    }
+
     /// This request represents the order's fee-inclusive total, already bound on the server.
     func paymentRequest(_ input: MeldApplePayRequest? = nil) throws -> PKPaymentRequest {
         guard method == "APPLE_PAY", let merchantIdentifier,

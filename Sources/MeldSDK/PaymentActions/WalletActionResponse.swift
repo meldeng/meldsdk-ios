@@ -76,6 +76,18 @@ struct WalletPayment: CustomStringConvertible {
     let billing: ApplePayProcessBody.BillingAddress
     var description: String { "WalletPayment[REDACTED]" }
 
+    /// The error for a payment that failed validation or its submission claim. Only an earlier claim means it may have been sent.
+    static func notSubmitted(_ error: Error, orderId: String?) -> MeldError {
+        guard case .alreadyAttempted? = error as? PaymentActionError else {
+            return MeldError(orderId: orderId, code: MeldErrorCode.presentationFailed,
+                             message: "Payment details could not be validated or recorded. No payment was attempted.",
+                             detail: "PAYMENT_NOT_SUBMITTED", recoverable: false)
+        }
+        return MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
+                         message: "A payment was already attempted. Review the existing order.",
+                         detail: "submission_already_claimed", recoverable: false)
+    }
+
     func actionFields() throws -> [String: Any] {
         guard !token.isEmpty, token.utf8.count <= 49152, Data(base64Encoded: token)?.isEmpty == false,
               let email, valid(email, maximum: 254),

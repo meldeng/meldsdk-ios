@@ -30,7 +30,7 @@ final class ApplePayPublicAPITests: XCTestCase {
             MeldApplePayAvailability.unavailableReason(requiring: networks, device: { true }, wallet: wallet(cards))
         }
         let any = MeldApplePayAvailability.supportedNetworks, mercuryo = MercuryoApplePayAdapter.supportedNetworks
-        let noCard = "Apple Pay has no usable card in Wallet on this device."
+        let noCard = "Apple Pay has no usable card on this device."
         XCTAssertEqual(Set(any), [.visa, .masterCard, .amex, .discover, .maestro])
         XCTAssertEqual(mercuryo, [.visa, .masterCard])
         XCTAssertEqual(reason(any, []), noCard, "An empty Wallet hides Apple Pay")
@@ -47,8 +47,6 @@ final class ApplePayPublicAPITests: XCTestCase {
                        "Apple Pay is not supported on this device.")
         XCTAssertNil(MeldApplePayAvailability.unavailableReason(device: { true }, wallet: wallet([])),
                      "A provider-hosted surface asserts no networks")
-        XCTAssertEqual(Meld.canPresentApplePay(), PKPaymentAuthorizationController.canMakePayments()
-                       && PKPaymentAuthorizationController.canMakePayments(usingNetworks: any))
     }
 
     func testMountDispatchesByOrderType_cardOrderWithoutHostThrowsMissingHost() throws {
@@ -66,7 +64,7 @@ final class ApplePayPublicAPITests: XCTestCase {
         // An Apple Pay order needs the MeldApplePayRequest; mounting without it is a clear error.
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"sessionToken":"jwt","merchantTransactionId":"s","merchantIdentifier":"m"}}"#)
         XCTAssertThrowsError(try Meld.mount(order)) { error in
-            guard case MeldApplePayError.invalidOrder = error else {
+            guard case MeldMountError.invalidOrder = error else {
                 return XCTFail("expected invalidOrder, got \(error)")
             }
         }
@@ -77,11 +75,36 @@ final class ApplePayPublicAPITests: XCTestCase {
         // which run before any PassKit availability check.
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"merchantTransactionId":"s","merchantIdentifier":"m"}}"#)
         XCTAssertThrowsError(try Meld.mount(order, applePay: request)) { error in
-            guard case let MeldApplePayError.invalidOrder(detail) = error else {
+            guard case let MeldMountError.invalidOrder(detail) = error else {
                 return XCTFail("expected invalidOrder, got \(error)")
             }
             XCTAssertTrue(detail.contains("sessionToken"))
         }
+    }
+
+    func testALegacyOrderOnADeviceThatCannotPayReportsItAfterMountReturns() throws {
+        let order = try order(#"{"id":"o-\#(UUID().uuidString)","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"sessionToken":"jwt","merchantTransactionId":"s","merchantIdentifier":"m"}}"#)
+        let noCard = MercuryoApplePayAdapter(probe: WalletProbe(device: { true }, wallet: { _ in false }))
+        let context = MeldMountContext(host: nil, applePay: request)
+        var errors: [MeldError] = []
+        let reported = expectation(description: "reported")
+
+        let session = try noCard.mount(order: order, context: context,
+                                       handlers: MeldEventHandlers(onError: { errors.append($0); reported.fulfill() }))
+        XCTAssertTrue(errors.isEmpty, "reported only after mount returns")
+        wait(for: [reported], timeout: 1)
+        XCTAssertEqual(errors.map(\.code), ["PAYMENT_METHOD_UNAVAILABLE"])
+        XCTAssertEqual(errors.first?.recoverable, false)
+        XCTAssertEqual(errors.first?.attemptMayExist, false)
+
+        var late: [MeldError] = []
+        let released = try noCard.mount(order: order, context: context, handlers: MeldEventHandlers(onError: { late.append($0) }))
+        released.unmount()
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+        XCTAssertTrue(late.isEmpty, "the order is free to mount again, and an unmounted mount reports nothing")
+        withExtendedLifetime(session) {}
     }
 
     // MARK: - Dispatch must not regress the shipped Apple Pay path
@@ -94,7 +117,7 @@ final class ApplePayPublicAPITests: XCTestCase {
         let order = try order(#"{"id":"o1","paymentMethodType":"APPLE_PAY","paymentMethodResponseDetails":{"sessionToken":"jwt","merchantTransactionId":"s"}}"#)
         XCTAssertEqual(Meld.capabilities(for: order).surface, "native-applepay")
         XCTAssertThrowsError(try Meld.mount(order, applePay: request)) { error in
-            guard case let MeldApplePayError.invalidOrder(detail) = error else {
+            guard case let MeldMountError.invalidOrder(detail) = error else {
                 return XCTFail("expected invalidOrder, got \(error)")
             }
             XCTAssertTrue(detail.contains("merchantIdentifier"), "want the precise field error, got: \(detail)")
