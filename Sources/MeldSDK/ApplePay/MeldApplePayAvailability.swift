@@ -13,7 +13,7 @@ import PassKit
 enum MeldApplePayAvailability {
 
     /// Every card network at least one Apple Pay provider behind this SDK accepts.
-    /// `Meld.canPresentApplePay()` has no order to ask about, so it requires a card on one of these.
+    /// Readiness for a provider that sets its own networks requires a card on one of these.
     /// Stripe's request (`StripeAPI.paymentRequest`) lists all of them and Mercuryo's lists Visa and
     /// Mastercard. Banxa, through Primer, and Coinbase set networks on their own merchant accounts,
     /// and the cards they document are within this set. An adapter that builds a narrower request
@@ -36,8 +36,20 @@ enum MeldApplePayAvailability {
         }
         guard let networks, !networks.isEmpty else { return nil }
         guard wallet(networks) else {
-            return "Apple Pay has no usable card in Wallet on this device."
+            return "Apple Pay has no usable card on this device."
         }
         return nil
+    }
+
+    /// Readiness against the networks a payment asks Wallet for. When the provider's merchant account sets
+    /// them, a card on any `supportedNetworks` is as far as the SDK can tell.
+    static func readiness(_ wallet: WalletNetworks, probe: WalletProbe) -> MeldReadiness {
+        if let reason = unavailableReason(requiring: wallet.networks, device: probe.device, wallet: probe.wallet) {
+            return .unavailable(reason)
+        }
+        if case .providerSet = wallet {
+            return .unknown(reason: "The provider's merchant account decides which Wallet cards it accepts.")
+        }
+        return .ready
     }
 }

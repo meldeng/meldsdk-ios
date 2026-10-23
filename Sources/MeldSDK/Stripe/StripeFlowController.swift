@@ -44,6 +44,7 @@ final class StripeFlowController {
     private let pause: @MainActor () async throws -> Void
     private let now: () -> Date
     private let request: PKPaymentRequest?
+    private let probe: WalletProbe
     private var runtime: StripeSdkRuntime?
     private var financialStarted = false
     private var session: String?
@@ -59,10 +60,11 @@ final class StripeFlowController {
     init(order: StripeNativeOrder, client: PaymentActionSending, store: WalletAttemptStoring,
          forms: StripeFlowPresenting, lifetime: StripeFlowLifetime, request: PKPaymentRequest?,
          factory: @escaping @MainActor () async throws -> StripeSdkRuntime,
+         probe: WalletProbe = WalletProbe(),
          now: @escaping () -> Date = Date.init,
          pause: @escaping @MainActor () async throws -> Void = { try await Task.sleep(nanoseconds: 2_000_000_000) }) {
         self.order = order; self.client = client; self.store = store; self.forms = forms
-        self.lifetime = lifetime; self.request = request; self.factory = factory; self.now = now; self.pause = pause
+        self.lifetime = lifetime; self.request = request; self.factory = factory; self.probe = probe; self.now = now; self.pause = pause
     }
 
     func run() async throws -> Outcome {
@@ -75,6 +77,7 @@ final class StripeFlowController {
         switch submission {
         case .notStarted(let auth):
             guard !(try store.record()).submissionStarted else { throw PaymentActionError.alreadyAttempted }
+            try requireWallet()
             authentication = auth
         case .resumeSession(let existing, let auth):
             session = existing; financialStarted = true; try store.observeSubmission(); authentication = auth
@@ -90,6 +93,7 @@ final class StripeFlowController {
                 if verifiedTier != "L0", verifiedTier != "NONE" { try await confirmIdentity() }
                 guard try await stepUpOverLimits() else { return .verificationPending }
                 try await sdk { try await $0.registerWallet(address: self.order.walletAddress, network: self.order.walletNetwork) }
+                try requireWallet()
                 let presenter = try await forms.handOff()
                 try await sdk { try await $0.collectPayment(request: self.request, from: presenter) }
                 let token = try await sdk { try await $0.createPaymentToken() }
@@ -345,6 +349,13 @@ final class StripeFlowController {
             result = try await action("REFRESH_QUOTE", key: UUID())
         }
         throw StripeNativeError.invalidResponse
+    }
+
+    /// Checked before a new Apple Pay payment is collected, never when resuming one that already exists.
+    private func requireWallet() throws {
+        guard let request, let reason = MeldApplePayAvailability.unavailableReason(
+            requiring: request.supportedNetworks, device: probe.device, wallet: probe.wallet) else { return }
+        throw PaymentMethodUnavailable(reason: reason)
     }
 
     private func observe(_ submission: StripeActionResponse.Submission) throws -> Outcome {

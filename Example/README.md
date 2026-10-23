@@ -54,8 +54,9 @@ To actually present the Apple Pay sheet you need a **paid Apple Developer accoun
    [`project.yml`](project.yml), enable the **Apple Pay** capability for your team, then
    `xcodegen generate` again.
 3. **Run.** On the Simulator (with a Wallet test card) the sheet presents so you can watch the event
-   flow — but the Simulator returns an **empty token**, so `/process` ends in
-   `EMPTY_APPLE_PAY_TOKEN`. A real transaction needs the real-device flow below.
+   flow — but the Simulator returns an **empty token**, so the SDK reports `PRESENTATION_FAILED`
+   with `detail` `EMPTY_APPLE_PAY_TOKEN` before anything is sent. A real transaction needs the
+   real-device flow below.
 
 ### Real-device Apple Pay (end-to-end)
 

@@ -291,14 +291,15 @@ struct BanxaWebCheckoutPresenter: BanxaCheckoutPresenter {
             recoverable: false)
     }
 
-    /// The bootstrap's own `error` messages: the SDK bundle did not load, the component did not mount,
-    /// or Primer refused the client token (`checkout-error`). The card form never accepted a payment.
+    /// The bootstrap's own `error` messages: the SDK bundle did not load (`PROVIDER_LOAD_FAILED`), or the
+    /// component did not mount or Primer refused the client token (`PRESENTATION_FAILED`). The card form
+    /// never accepted a payment.
     private static func checkoutFailure(_ providerMessage: [String: Any], orderId: String?) -> MeldError {
         let error = (providerMessage["detail"] as? [String: Any])?["error"] as? [String: Any]
         let code = (error?["code"] as? String) ?? "unknown"
         return MeldError(
             orderId: orderId,
-            code: MeldErrorCode.presentationFailed,
+            code: code == "sdk_unavailable" ? MeldErrorCode.providerLoadFailed : MeldErrorCode.presentationFailed,
             message: (error?["message"] as? String) ?? "Banxa checkout failed to load.",
             detail: "banxa_card_failed:\(code)",
             recoverable: false)

@@ -256,7 +256,30 @@ final class WalletPaymentSessionTests: XCTestCase {
         XCTAssertEqual(flow.outcomes, [false])
         XCTAssertFalse(flow.store.value.submissionStarted)
         XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION"])
-        XCTAssertEqual(flow.errors.map(\.code), ["PAYMENT_NOT_SUBMITTED"])
+        XCTAssertEqual(flow.errors.map(\.code), ["PRESENTATION_FAILED"])
+        XCTAssertEqual(flow.errors.first?.detail, "PAYMENT_NOT_SUBMITTED")
+        XCTAssertEqual(flow.errors.first?.attemptMayExist, false)
+    }
+
+    func testAFailedSubmissionClaimSendsNothingAndOnlyAnEarlierClaimMayHaveAnAttempt() throws {
+        for earlierClaim in [false, true] {
+            let flow = try WalletHarness()
+            flow.session.start()
+            flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
+            if earlierClaim { flow.store.value.submissionStarted = true } else { flow.store.fail = true }
+            flow.authorize()
+            XCTAssertEqual(flow.outcomes, [false])
+            XCTAssertEqual(flow.client.operations, ["READ_SUBMISSION"])
+            XCTAssertEqual(flow.errors.map(\.code), [earlierClaim ? "PAYMENT_OUTCOME_UNKNOWN" : "PRESENTATION_FAILED"])
+            XCTAssertEqual(flow.errors.first?.detail, earlierClaim ? "submission_already_claimed" : "PAYMENT_NOT_SUBMITTED")
+            XCTAssertEqual(flow.errors.first?.attemptMayExist, earlierClaim)
+        }
+        for (error, attempted) in [(PaymentActionError.invalidRequest, false), (.storage, false), (.alreadyAttempted, true)] {
+            let reported = WalletPayment.notSubmitted(error, orderId: "test-order")
+            XCTAssertEqual(reported.attemptMayExist, attempted, String(describing: error))
+            XCTAssertEqual(reported.orderId, "test-order")
+            XCTAssertFalse(reported.recoverable)
+        }
     }
 
     func testReentrantUnmountFromStatusPreventsFurtherCallbacksOrSurfaces() throws {
@@ -309,18 +332,22 @@ final class WalletPaymentSessionTests: XCTestCase {
 
     func testApplePayUnavailableBeforeAnyAttemptIsReportedAsSuch() throws {
         let flow = try WalletHarness(gated: true)
-        flow.sheetError = MeldApplePayError.unavailable
+        flow.sheetError = PaymentMethodUnavailable(reason: "Apple Pay has no usable card on this device.")
         flow.session.start()
         flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
-        XCTAssertEqual(flow.errors.map(\.code), ["APPLE_PAY_UNAVAILABLE"])
+        XCTAssertEqual(flow.errors.map(\.code), ["PAYMENT_METHOD_UNAVAILABLE"])
+        XCTAssertEqual(flow.errors.first?.message, "Apple Pay has no usable card on this device.")
         XCTAssertFalse(try XCTUnwrap(flow.errors.first).recoverable)
         XCTAssertFalse(flow.store.value.submissionStarted)
         XCTAssertEqual(flow.client.finished, 1)
         let other = try WalletHarness(gated: true)
-        other.sheetError = MeldApplePayError.invalidOrder("synthetic")
+        other.sheetError = MeldMountError.invalidOrder("synthetic")
         other.session.start()
         other.client.respond(0, WalletFixtures.response("NOT_STARTED"))
-        XCTAssertEqual(other.errors.map(\.code), ["PAYMENT_CONTINUATION_UNAVAILABLE"])
+        XCTAssertEqual(other.errors.map(\.code), ["PRESENTATION_FAILED"])
+        XCTAssertEqual(other.errors.first?.detail, "PAYMENT_CONTINUATION_UNAVAILABLE")
+        XCTAssertEqual(other.errors.first?.attemptMayExist, false)
+        XCTAssertFalse(other.store.value.submissionStarted)
     }
 }
 

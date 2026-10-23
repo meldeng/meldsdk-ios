@@ -9,6 +9,9 @@ struct MercuryoApplePayAdapter: MeldAdapter {
     let presentations = [MeldAdapterPresentation("APPLE_PAY", "NATIVE_TOKEN", "MELD_WALLET_TOKEN")]
     /// Mercuryo's merchant is in LT and supports Visa/Mastercard with 3DS, credit and debit.
     static let supportedNetworks: [PKPaymentNetwork] = [.visa, .masterCard]
+    var probe = WalletProbe()
+
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks? { .requested(Self.supportedNetworks) }
 
     func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool {
         order.hasCompatibleLegacyPresentation("NATIVE_TOKEN") && hasWalletDetails(order)
@@ -25,7 +28,7 @@ struct MercuryoApplePayAdapter: MeldAdapter {
 
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard hasWalletDetails(order) else {
-            throw MeldApplePayError.invalidOrder("Apple Pay order needs a sessionToken, merchantTransactionId and merchantIdentifier.")
+            throw MeldMountError.invalidOrder("Apple Pay order needs a sessionToken, merchantTransactionId and merchantIdentifier.")
         }
         // An explicit but invalid action descriptor must never fall back to a guessed legacy URL.
         if order.raw["paymentActions"] != nil || order.headlessPresentation != nil {
@@ -71,10 +74,11 @@ struct MercuryoApplePayAdapter: MeldAdapter {
         guard let request = context.applePay, request.amount > 0,
               request.currencyCode.range(of: "\\A[A-Z]{3}\\z", options: .regularExpression) != nil,
               let merchant = order.paymentMethodResponseDetails?["merchantIdentifier"] as? String else {
-            throw MeldApplePayError.invalidOrder("A new wallet payment needs a MeldApplePayRequest with the order's amount and currency.")
+            throw MeldMountError.invalidOrder("A new wallet payment needs a MeldApplePayRequest with the order's amount and currency.")
         }
-        guard MeldApplePayAvailability.unavailableReason(requiring: Self.supportedNetworks) == nil else {
-            throw MeldApplePayError.unavailable
+        if let reason = MeldApplePayAvailability.unavailableReason(requiring: Self.supportedNetworks, device: probe.device,
+                                                                   wallet: probe.wallet) {
+            throw PaymentMethodUnavailable(reason: reason)
         }
         return ApplePayCoordinator(orderId: order.id, merchantIdentifier: merchant, request: request,
                                    merchantCountryCode: "LT", supportedNetworks: Self.supportedNetworks,
@@ -86,7 +90,7 @@ struct MercuryoApplePayAdapter: MeldAdapter {
                              _ handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard let id = order.id, !id.isEmpty, let request = context.applePay,
               !request.walletAddress.isEmpty, !request.clientIpAddress.isEmpty else {
-            throw MeldApplePayError.invalidOrder("Legacy Apple Pay needs an order id, wallet address and client IP in MeldApplePayRequest.")
+            throw MeldMountError.invalidOrder("Legacy Apple Pay needs an order id, wallet address and client IP in MeldApplePayRequest.")
         }
         let identity = PaymentActionDescriptor.baseURL(Meld.environment)
             + "/crypto/order/headless/onramp/\(order.serviceProvider ?? "MERCURYO")/\(id)/actions"
@@ -100,9 +104,7 @@ struct MercuryoApplePayAdapter: MeldAdapter {
             let coordinator = try makeSheet(order, context, handlers, process: { payment, completion in
                 do { _ = try payment.actionFields(); _ = try store.claimSubmission() }
                 catch {
-                    completion(ApplePayProcessOutcome(events: [.error(MeldError(orderId: id, code: "PAYMENT_NOT_SUBMITTED",
-                        message: "Payment details or attempt state could not be validated. Review the existing order.",
-                        recoverable: false))], succeeded: false))
+                    completion(ApplePayProcessOutcome(events: [.error(WalletPayment.notSubmitted(error, orderId: id))], succeeded: false))
                     return
                 }
                 let body = ApplePayProcessBody.make(payTokenBase64: payment.token,
@@ -125,7 +127,26 @@ struct MercuryoApplePayAdapter: MeldAdapter {
         } catch {
             client.finish()
             WalletMountOwnership.release(identity)
+            if let unavailable = error as? PaymentMethodUnavailable {
+                return UnavailableLegacySession(orderId: id, reason: unavailable.reason, handlers: handlers)
+            }
             throw error
         }
     }
+}
+
+/// A legacy order on a device that cannot pay. Reports that once `Meld.mount` has returned its handle.
+private final class UnavailableLegacySession: MeldProviderSession {
+    private var active = true
+
+    init(orderId: String, reason: String, handlers: MeldEventHandlers) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.active else { return }
+            self.active = false
+            handlers.onError?(MeldError(orderId: orderId, code: MeldErrorCode.paymentMethodUnavailable,
+                                        message: reason, recoverable: false))
+        }
+    }
+
+    func unmount() { active = false }
 }

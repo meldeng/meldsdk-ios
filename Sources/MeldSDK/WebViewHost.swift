@@ -138,12 +138,12 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        emitError(code: "NAVIGATION_FAILED", message: error.localizedDescription,
+        emitError(code: MeldErrorCode.providerLoadFailed, message: error.localizedDescription,
                   detail: Self.detail(from: error), recoverable: false)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        emitError(code: "PROVIDER_LOAD_FAILED", message: error.localizedDescription,
+        emitError(code: MeldErrorCode.providerLoadFailed, message: error.localizedDescription,
                   detail: Self.detail(from: error), recoverable: true)
     }
 

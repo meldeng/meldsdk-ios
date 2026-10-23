@@ -11,6 +11,10 @@ struct StripeNativeAdapter: MeldAdapter {
     func acceptsDeclaredOrder(_ order: MeldOrder) -> Bool { (try? StripeNativeOrder(order, environment: Meld.environment)) != nil }
     func matches(_ order: MeldOrder) -> Bool { false }
 
+    func walletNetworks(paymentMethodType: String) -> WalletNetworks? {
+        paymentMethodType == "APPLE_PAY" ? .requested(StripeNativeOrder.applePayNetworks) : nil
+    }
+
     func mount(order: MeldOrder, context: MeldMountContext, handlers: MeldEventHandlers) throws -> MeldProviderSession {
         guard Thread.isMainThread else { throw StripeNativeError.unavailable }
         let native = try StripeNativeOrder(order, environment: Meld.environment)
@@ -37,7 +41,7 @@ final class StripePaymentSession: MeldProviderSession {
 
     init(order: StripeNativeOrder, host: UIView?, request: PKPaymentRequest?, handlers: MeldEventHandlers,
          client: PaymentActionSending? = nil, store: WalletAttemptStoring? = nil,
-         factory: (@MainActor () async throws -> StripeSdkRuntime)? = nil) throws {
+         factory: (@MainActor () async throws -> StripeSdkRuntime)? = nil, probe: WalletProbe = WalletProbe()) throws {
         let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }.flatMap(\.windows).filter(\.isKeyWindow)
         guard let root = host?.window?.rootViewController ?? (windows.count == 1 ? windows.first?.rootViewController : nil)
@@ -51,7 +55,8 @@ final class StripePaymentSession: MeldProviderSession {
         flow = StripeFlowController(order: order, client: client ?? PaymentActionClient(descriptor: order.actions),
                                     store: store ?? WalletAttemptStore(identity: order.actions.identity), forms: forms,
                                     lifetime: lifetime, request: request,
-                                    factory: factory ?? { try await StripeSdkRuntime.open { try await StripeSdkDriver.create(publicKey: order.publicKey) } })
+                                    factory: factory ?? { try await StripeSdkRuntime.open { try await StripeSdkDriver.create(publicKey: order.publicKey) } },
+                                    probe: probe)
         forms.onCancelWhileBusy = { [weak self] in self?.cancel() }
         // Mount returns its lifecycle handle before any callbacks. Nothing is shown until the flow needs the customer.
         DispatchQueue.main.async { [weak self] in self?.start() }
@@ -133,6 +138,10 @@ final class StripePaymentSession: MeldProviderSession {
         default: detail = "\(raw.domain) #\(raw.code)"
         }
         guard mayHaveFinancialAttempt else {
+            if let unavailable = error as? PaymentMethodUnavailable {
+                return MeldError(orderId: orderId, code: MeldErrorCode.paymentMethodUnavailable, message: unavailable.reason,
+                                 recoverable: false)
+            }
             return MeldError(orderId: orderId, code: MeldErrorCode.presentationFailed,
                              message: "This payment could not be started. No payment was attempted.", detail: detail, recoverable: false)
         }

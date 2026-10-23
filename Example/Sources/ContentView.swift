@@ -345,8 +345,11 @@ struct ContentView: View {
                 // Deliberately NOT gated on `caps.surface`: an Apple Pay order may be a native
                 // PassKit sheet OR a provider-hosted page, and which one is the SDK's business.
                 // Build the request either way — it is ignored by the surfaces that don't need it.
-                guard Meld.canPresentApplePay() else { // SDK: device/user can pay?
-                    errorText = "Apple Pay isn't available. On the Simulator, add a test card in Wallet "
+                // A real app asks before creating the order, with the quote row's headlessPresentation.
+                if let presentation = order.headlessPresentation,
+                   case let .unavailable(_, reason) = await Meld.presentationReadiness( // SDK: can this device pay?
+                       presentation, paymentMethodType: method.paymentMethodType) {
+                    errorText = reason + " On the Simulator, add a test card in Wallet "
                         + "(Features ▸ Add Test Card / Wallet settings)."
                     return
                 }

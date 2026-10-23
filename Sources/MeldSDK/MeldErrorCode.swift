@@ -2,8 +2,8 @@ import Foundation
 
 /// Normalized `MeldError.code` values. The provider's own event and code travel in `detail`.
 public enum MeldErrorCode {
-    /// No attempt exists. Offer hosted checkout or another method.
-    public static let applePayUnavailable = "APPLE_PAY_UNAVAILABLE"
+    /// No attempt exists. This device or customer cannot pay with the order's method; offer another.
+    public static let paymentMethodUnavailable = "PAYMENT_METHOD_UNAVAILABLE"
     /// No attempt exists. The next attempt needs a new order.
     public static let presentationFailed = "PRESENTATION_FAILED"
     /// Declined; nothing will settle. Offer another option.
@@ -14,10 +14,12 @@ public enum MeldErrorCode {
     public static let verificationPending = "VERIFICATION_PENDING"
     /// An attempt may exist. Track the order and never pay it again.
     public static let paymentOutcomeUnknown = "PAYMENT_OUTCOME_UNKNOWN"
+    /// An attempt may exist. The provider's page did not load; with `recoverable: true` the surface stays up.
+    public static let providerLoadFailed = "PROVIDER_LOAD_FAILED"
     /// Reserved.
     static let providerUnavailable = "PROVIDER_UNAVAILABLE"
 
-    private static let noAttempt: Set<String> = [applePayUnavailable, presentationFailed, paymentRejected,
+    private static let noAttempt: Set<String> = [paymentMethodUnavailable, presentationFailed, paymentRejected,
                                                  orderStateChanged, verificationPending]
 
     /// `false` only for the codes above that say no attempt exists. Every other code, including one this

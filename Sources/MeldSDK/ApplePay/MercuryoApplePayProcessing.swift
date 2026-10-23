@@ -174,7 +174,7 @@ final class MercuryoApplePayClient {
     /// transport/encoding failure returns `.failure`; callers must not retry an ambiguous payment.
     func process(body: [String: Any], completion: @escaping (Result<(Int, [String: Any]?), Error>) -> Void) {
         guard let url = URL(string: Self.baseURL(for: environment) + Self.processPath) else {
-            completion(.failure(MeldApplePayError.processingFailed("Invalid Apple Pay process URL")))
+            completion(.failure(PaymentActionError.invalidRequest))
             return
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
@@ -186,7 +186,7 @@ final class MercuryoApplePayClient {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
-            completion(.failure(MeldApplePayError.processingFailed("Failed to encode process body")))
+            completion(.failure(PaymentActionError.invalidRequest))
             return
         }
         urlSession.dataTask(with: request) { data, response, error in

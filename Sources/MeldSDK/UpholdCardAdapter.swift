@@ -209,14 +209,23 @@ struct UpholdCardAdapter: MeldAdapter {
         return selection["id"] as? String
     }
 
+    /// The bootstrap's own codes are normalized: the widget SDK did not load (`PROVIDER_LOAD_FAILED`), or
+    /// mounting it threw before the widget showed (`PRESENTATION_FAILED`). The widget's own codes pass through.
     private static func errorFrom(_ providerMessage: [String: Any], orderId: String?) -> MeldError {
         let detail = providerMessage["detail"] as? [String: Any]
         let error = detail?["error"] as? [String: Any]
+        let providerCode = (error?["code"] as? String) ?? "error"
+        let code: String
+        switch providerCode {
+        case "sdk_unavailable": code = MeldErrorCode.providerLoadFailed
+        case "mount_failed": code = MeldErrorCode.presentationFailed
+        default: code = providerCode
+        }
         return MeldError(
             orderId: orderId,
-            code: (error?["code"] as? String) ?? "error",
+            code: code,
             message: (error?["message"] as? String) ?? "Uphold widget error",
-            detail: nil,
+            detail: code == providerCode ? nil : "uphold_card_failed:\(providerCode)",
             recoverable: false)
     }
 

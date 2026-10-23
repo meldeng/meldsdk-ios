@@ -3,6 +3,14 @@ import os
 
 extension MeldEventHandlers {
 
+    /// The handlers an adapter mounting `order` receives: every error names the order's payment method, and
+    /// `gate` delivers one terminal callback.
+    func mounted(_ order: MeldOrder, gate: TerminalGate) -> MeldEventHandlers {
+        var named = self
+        named.onError = onError.map { onError in { onError($0.naming(order.paymentMethodType)) } }
+        return named.gated(by: gate)
+    }
+
     /// Delivers exactly one terminal callback per mount — `onPaymentSubmitted`, `onCancel` or a
     /// non-recoverable `onError` — and drops every callback after it.
     ///
@@ -42,6 +50,13 @@ extension MeldEventHandlers {
             if let error = gate.unannouncedEnd(orderId: orderId) { onError(error) }
         }
         return handlers
+    }
+}
+
+extension MeldError {
+    func naming(_ paymentMethodType: String?) -> MeldError {
+        MeldError(orderId: orderId, code: code, message: message, detail: detail, recoverable: recoverable,
+                  paymentMethodType: self.paymentMethodType ?? paymentMethodType)
     }
 }
 

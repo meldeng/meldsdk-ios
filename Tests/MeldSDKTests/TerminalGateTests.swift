@@ -243,13 +243,41 @@ final class TerminalGateTests: XCTestCase {
         XCTAssertTrue(r.events.isEmpty)
     }
 
+    func testEveryErrorOfAMountNamesTheOrdersPaymentMethod() throws {
+        var errors: [MeldError] = []
+        let order = try MeldOrder.from(jsonString: #"{"id":"ord_1","paymentMethodType":"APPLE_PAY"}"#)
+        let handlers = MeldEventHandlers(onError: { errors.append($0) }).mounted(order, gate: TerminalGate())
+
+        handlers.onError?(MeldError(orderId: "ord_1", code: "PROVIDER_LOAD_FAILED", message: "offline", detail: "d",
+                                    recoverable: true))
+        handlers.onError?(MeldError(orderId: "ord_1", code: "x", message: "x", recoverable: true,
+                                    paymentMethodType: "CREDIT_DEBIT_CARD"))
+        handlers.sessionEnded?("ord_1")
+
+        XCTAssertEqual(errors.map(\.paymentMethodType), ["APPLE_PAY", "CREDIT_DEBIT_CARD", "APPLE_PAY"])
+        XCTAssertEqual(errors.first?.code, "PROVIDER_LOAD_FAILED")
+        XCTAssertEqual(errors.first?.message, "offline")
+        XCTAssertEqual(errors.first?.detail, "d")
+        XCTAssertEqual(errors.first?.recoverable, true)
+        XCTAssertEqual(errors.last?.code, MeldErrorCode.paymentOutcomeUnknown, "the backstop names it too")
+
+        var unnamed: [MeldError] = []
+        let legacy = try MeldOrder.from(jsonString: #"{"id":"ord_2"}"#)
+        MeldEventHandlers(onError: { unnamed.append($0) }).mounted(legacy, gate: TerminalGate())
+            .onError?(MeldError(orderId: "ord_2", code: "x", message: "x", recoverable: false))
+        XCTAssertEqual(unnamed.count, 1)
+        XCTAssertNil(unnamed.first?.paymentMethodType)
+    }
+
     func testOnlyTheCodesThatSayNoAttemptExistsRuleOutAnAttempt() {
-        let codes = [MeldErrorCode.applePayUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.paymentRejected,
-                     MeldErrorCode.orderStateChanged, MeldErrorCode.verificationPending, MeldErrorCode.paymentOutcomeUnknown]
-        XCTAssertEqual(codes, ["APPLE_PAY_UNAVAILABLE", "PRESENTATION_FAILED", "PAYMENT_REJECTED", "ORDER_STATE_CHANGED",
-                               "VERIFICATION_PENDING", "PAYMENT_OUTCOME_UNKNOWN"])
-        XCTAssertEqual(codes.map(MeldErrorCode.attemptMayExist), [false, false, false, false, false, true])
-        for code in ["PAYMENT_STATE_UNAVAILABLE", "WAIT_FOR_PAYMENT", "NAVIGATION_FAILED", "A_CODE_FROM_A_LATER_BUILD"] {
+        let codes = [MeldErrorCode.paymentMethodUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.paymentRejected,
+                     MeldErrorCode.orderStateChanged, MeldErrorCode.verificationPending, MeldErrorCode.paymentOutcomeUnknown,
+                     MeldErrorCode.providerLoadFailed]
+        XCTAssertEqual(codes, ["PAYMENT_METHOD_UNAVAILABLE", "PRESENTATION_FAILED", "PAYMENT_REJECTED", "ORDER_STATE_CHANGED",
+                               "VERIFICATION_PENDING", "PAYMENT_OUTCOME_UNKNOWN", "PROVIDER_LOAD_FAILED"])
+        XCTAssertEqual(codes.map(MeldErrorCode.attemptMayExist), [false, false, false, false, false, true, true])
+        for code in ["PAYMENT_STATE_UNAVAILABLE", "WAIT_FOR_PAYMENT", "NAVIGATION_FAILED", "APPLE_PAY_UNAVAILABLE",
+                     "A_CODE_FROM_A_LATER_BUILD"] {
             XCTAssertTrue(MeldErrorCode.attemptMayExist(code), code)
         }
         XCTAssertFalse(MeldError(orderId: "ord_1", code: MeldErrorCode.paymentRejected, message: "x", recoverable: false).attemptMayExist)
@@ -259,7 +287,7 @@ final class TerminalGateTests: XCTestCase {
     func testOnlyDeclinesAndUnknownOutcomesHaveSharedCopy() {
         XCTAssertEqual(MeldErrorMessage.standard(for: MeldErrorCode.paymentRejected), MeldErrorMessage.paymentRejected)
         XCTAssertEqual(MeldErrorMessage.standard(for: MeldErrorCode.paymentOutcomeUnknown), MeldErrorMessage.paymentOutcomeUnknown)
-        for code in [MeldErrorCode.applePayUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.orderStateChanged,
+        for code in [MeldErrorCode.paymentMethodUnavailable, MeldErrorCode.presentationFailed, MeldErrorCode.orderStateChanged,
                      MeldErrorCode.verificationPending, "A_CODE_FROM_A_LATER_BUILD"] {
             XCTAssertNil(MeldErrorMessage.standard(for: code), code)
         }

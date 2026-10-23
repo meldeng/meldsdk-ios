@@ -1,6 +1,7 @@
 import Foundation
 import PassKit
 import UIKit
+import os
 
 // Public surface of the SDK. The same shape as the web SDK (@meldcrypto/sdk):
 //   Meld.configure(environment:)
@@ -98,13 +99,18 @@ public struct MeldError {
     /// Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be nil.
     public let detail: String?
     public let recoverable: Bool
+    /// The mounted order's `paymentMethodType` (e.g. "APPLE_PAY"), so a message can name the method without
+    /// branching on `code`. Nil when the order has none.
+    public let paymentMethodType: String?
 
-    public init(orderId: String?, code: String, message: String, detail: String? = nil, recoverable: Bool) {
+    public init(orderId: String?, code: String, message: String, detail: String? = nil, recoverable: Bool,
+                paymentMethodType: String? = nil) {
         self.orderId = orderId
         self.code = code
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
+        self.paymentMethodType = paymentMethodType
     }
 }
 
@@ -137,6 +143,7 @@ public struct MeldEventHandlers {
 
 public struct MeldCapabilities {
     public let embeddable: Bool
+    /// Informational, except `"unsupported"`: branch only on that and on `embeddable`.
     public let surface: String
     public let requiresUserGesture: Bool
 }
@@ -150,10 +157,12 @@ public enum MeldMountError: LocalizedError {
     case missingHost(String)
     /// The SDK presents this order's payment UI itself, but no visible view controller could anchor it.
     case presentationUnavailable
+    /// The order, or the `applePay:` request, lacks a field its payment method needs (e.g. `merchantIdentifier`).
+    case invalidOrder(String)
 
     public var errorDescription: String? {
         switch self {
-        case let .unsupported(detail):
+        case let .unsupported(detail), let .invalidOrder(detail):
             return detail
         case .missingWidgetURL:
             return "Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load."
@@ -218,8 +227,9 @@ public enum Meld {
     }
 
     /// Advisory support for a quote or payment method before creating an order. This only checks
-    /// the installed adapter registry: it does not validate eligibility, Apple Pay availability,
-    /// legal evidence or an order's credentials. Check `capabilities(for: order)` again before mount.
+    /// the installed adapter registry: it does not validate eligibility, device readiness (see
+    /// `presentationReadiness`), legal evidence or an order's credentials. Check `capabilities(for: order)`
+    /// again before mount.
     /// Missing declarations must not be inferred from a provider name or legacy payload fields.
     public static func capabilities(for presentation: MeldHeadlessPresentation,
                                     paymentMethodType: String) -> MeldCapabilities {
@@ -259,7 +269,7 @@ public enum Meld {
         // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
         // handler directly — see TerminalGate.
         let gate = TerminalGate()
-        let session = try adapter.mount(order: order, context: context, handlers: handlers.gated(by: gate))
+        let session = try adapter.mount(order: order, context: context, handlers: handlers.mounted(order, gate: gate))
         return MeldWidgetHandle(mode: adapter.capabilities.surface, session: session, gate: gate)
     }
 
@@ -270,16 +280,58 @@ public enum Meld {
 
 }
 
-// MARK: - Native Apple Pay
+// MARK: - Readiness
 
 public extension Meld {
-    /// Whether this device and user can pay with Apple Pay right now: payments aren't restricted and
-    /// Wallet holds a card on a network some Apple Pay provider here accepts (Visa, Mastercard, American
-    /// Express, Discover or Maestro). A device with an empty Wallet reports false. It does not know the
-    /// provider: Mercuryo takes only Visa and Mastercard, and its mount reports `APPLE_PAY_UNAVAILABLE`
-    /// before the sheet when Wallet holds neither. Check before creating an Apple Pay order; it is then
-    /// presented through the normal `Meld.mount(order, applePay:handlers:)`.
-    static func canPresentApplePay() -> Bool {
-        MeldApplePayAvailability.unavailableReason(requiring: MeldApplePayAvailability.supportedNetworks) == nil
+    /// Whether this device can pay with `paymentMethodType` at all, asked before you quote. Apple Pay asks
+    /// PassKit about every card network this SDK's Apple Pay presentations take, Google Pay is unavailable on
+    /// iOS, and a method with no device check, such as a card, is unknown. Ask about the quote row with
+    /// `presentationReadiness(_:paymentMethodType:)` once you have one. Resumes on the caller's executor.
+    static func paymentMethodReadiness(_ paymentMethodType: String) async -> MeldReadiness {
+        readiness(of: paymentMethodType, probe: WalletProbe())
+    }
+
+    /// `paymentMethodReadiness(_:)` for callers without async. `completion` runs once, on the main queue, after
+    /// this call returns. Only this form delivers on the main queue.
+    static func paymentMethodReadiness(_ paymentMethodType: String, completion: @escaping (MeldReadiness) -> Void) {
+        let answer = readiness(of: paymentMethodType, probe: WalletProbe())
+        DispatchQueue.main.async { completion(answer) }
+    }
+
+    /// Whether this device can pay with a quote row's method, asked before you create the order. Pass the
+    /// row's `headlessPresentation` and `paymentMethodType`. Advisory: the mounted order has the final word.
+    /// Resumes on the caller's executor.
+    static func presentationReadiness(_ presentation: MeldHeadlessPresentation,
+                                      paymentMethodType: String) async -> MeldReadiness {
+        readiness(for: presentation, paymentMethodType: paymentMethodType, probe: WalletProbe())
+    }
+
+    /// `presentationReadiness(_:paymentMethodType:)` for callers without async. `completion` runs once, on the
+    /// main queue, after this call returns. Only this form delivers on the main queue.
+    static func presentationReadiness(_ presentation: MeldHeadlessPresentation, paymentMethodType: String,
+                                      completion: @escaping (MeldReadiness) -> Void) {
+        let answer = readiness(for: presentation, paymentMethodType: paymentMethodType, probe: WalletProbe())
+        DispatchQueue.main.async { completion(answer) }
+    }
+}
+
+extension Meld {
+    private static let readinessLogger = Logger(subsystem: "io.meld.sdk", category: "Readiness")
+
+    static func readiness(of paymentMethodType: String, probe: WalletProbe) -> MeldReadiness {
+        logged(registry.readiness(of: paymentMethodType, probe: probe), asked: "\(paymentMethodType) on this device")
+    }
+
+    static func readiness(for presentation: MeldHeadlessPresentation, paymentMethodType: String,
+                          probe: WalletProbe) -> MeldReadiness {
+        logged(registry.readiness(for: presentation, paymentMethodType: paymentMethodType, probe: probe),
+               asked: "\(paymentMethodType) via \(presentation.surface)/\(presentation.protocolName) v\(presentation.version)")
+    }
+
+    private static func logged(_ answer: MeldReadiness, asked: String) -> MeldReadiness {
+        if case let .unknown(reason) = answer {
+            readinessLogger.info("readiness for \(asked, privacy: .public) is unknown: \(reason, privacy: .public)")
+        }
+        return answer
     }
 }

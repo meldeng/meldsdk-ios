@@ -44,8 +44,23 @@ final class ApplePayCoordinatorTests: XCTestCase {
         harness.sheet.completesDismissal = false
         harness.coordinator.present()
         harness.drain()
-        XCTAssertEqual(harness.log, ["error:APPLE_PAY_UNAVAILABLE"])
+        XCTAssertEqual(harness.log, ["error:PAYMENT_METHOD_UNAVAILABLE"])
         XCTAssertEqual(harness.finished, 1)
+    }
+
+    func testAWalletPaymentMissingWhatTheOrderNeedsFailsPresentationWithoutProcessing() {
+        for (payment, detail) in [(FakePayment(shippingEmail: "customer@example.test", tokenData: Data()), "EMPTY_APPLE_PAY_TOKEN"),
+                                  (FakePayment(shippingEmail: "customer@example.test", givenName: nil), "MISSING_BILLING_NAME")] {
+            let harness = CoordinatorHarness(gated: true)
+            harness.coordinator.present()
+            harness.drain()
+            harness.authorize(payment)
+            XCTAssertEqual(harness.log, ["ready", "passkit:failure", "error:PRESENTATION_FAILED", "dismiss"], detail)
+            XCTAssertEqual(harness.errors.first?.detail, detail)
+            XCTAssertEqual(harness.errors.first?.attemptMayExist, false, detail)
+            XCTAssertTrue(harness.payments.isEmpty, detail)
+            XCTAssertEqual(harness.finished, 1, detail)
+        }
     }
 
     func testUnmountBeforeAFailedPresentationStillFinishes() {
@@ -69,6 +84,7 @@ private final class CoordinatorHarness {
     var outcome = ApplePayProcessOutcome(events: [], succeeded: true)
     var payments: [WalletPayment] = []
     var log: [String] = []
+    var errors: [MeldError] = []
     var finished = 0
     var onSubmitted: (() -> Void)?
 
@@ -77,7 +93,7 @@ private final class CoordinatorHarness {
             onPaymentSubmitted: { [weak self] _ in self?.log.append("submitted"); self?.onSubmitted?() },
             onStatusChange: { [weak self] in self?.log.append("status:\($0.status.rawValue)") },
             onCancel: { [weak self] _ in self?.log.append("cancel") },
-            onError: { [weak self] in self?.log.append("error:\($0.code)") })
+            onError: { [weak self] in self?.log.append("error:\($0.code)"); self?.errors.append($0) })
         coordinator = ApplePayCoordinator(
             orderId: "test-order", merchantIdentifier: "merchant.example.test",
             request: MeldApplePayRequest(amount: 15, currencyCode: "EUR", email: "fallback@example.test"),
@@ -127,14 +143,15 @@ private final class FakeSheet: ApplePaySheetControlling {
 }
 
 private final class FakePayment: PKPayment {
-    private let fakeToken = FakeToken()
+    private let fakeToken: FakeToken
     private let billing: PKContact
     private let shipping: PKContact?
 
-    init(shippingEmail: String?) {
+    init(shippingEmail: String?, tokenData: Data = Data("synthetic-wallet-token".utf8), givenName: String? = "Test") {
+        fakeToken = FakeToken(tokenData)
         billing = PKContact()
         var name = PersonNameComponents()
-        name.givenName = "Test"
+        name.givenName = givenName
         name.familyName = "Customer"
         billing.name = name
         let address = CNMutablePostalAddress()
@@ -158,5 +175,10 @@ private final class FakePayment: PKPayment {
 }
 
 private final class FakeToken: PKPaymentToken {
-    override var paymentData: Data { Data("synthetic-wallet-token".utf8) }
+    private let data: Data
+    init(_ data: Data) {
+        self.data = data
+        super.init()
+    }
+    override var paymentData: Data { data }
 }
