@@ -94,6 +94,7 @@ final class ApplePayPublicAPITests: XCTestCase {
         XCTAssertTrue(errors.isEmpty, "reported only after mount returns")
         wait(for: [reported], timeout: 1)
         XCTAssertEqual(errors.map(\.code), ["PAYMENT_METHOD_UNAVAILABLE"])
+        XCTAssertEqual(errors.first?.message, "Apple Pay has no usable card on this device.")
         XCTAssertEqual(errors.first?.recoverable, false)
         XCTAssertEqual(errors.first?.attemptMayExist, false)
 

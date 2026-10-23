@@ -218,6 +218,27 @@ final class BanxaApplePayAdapterTests: XCTestCase {
         XCTAssertEqual(shown.errors.first?.detail, "banxa_apple_pay_failed:apple-pay-no-cards-in-wallet")
     }
 
+    func testADeviceThatCannotMakeApplePayPaymentsReportsAnUnavailableMethodAfterMountReturns() throws {
+        let unable = BanxaApplePayAdapter(probe: WalletProbe(device: { false }, wallet: { _ in
+            XCTFail("Banxa's merchant account sets the networks"); return true
+        }))
+        let context = MeldMountContext(host: nil, applePay: nil)
+        let r = Recorder()
+        let session = try unable.mount(order: order(), context: context, handlers: r.handlers)
+        XCTAssertTrue(r.events.isEmpty, "reported only after mount returns")
+        settle(0.05)
+        XCTAssertEqual(r.events, ["error:PAYMENT_METHOD_UNAVAILABLE", "ended"])
+        XCTAssertEqual(r.errors.first?.message, "Apple Pay is not supported on this device.")
+        XCTAssertEqual(r.errors.first?.orderId, "order-1")
+        XCTAssertEqual(r.errors.first?.attemptMayExist, false)
+
+        let late = Recorder()
+        try unable.mount(order: order(), context: context, handlers: late.handlers).unmount()
+        settle(0.05)
+        XCTAssertTrue(late.events.isEmpty, "an unmounted mount reports nothing")
+        withExtendedLifetime(session) {}
+    }
+
     func testASheetThatNeverAppearsFailsAtThePresentationDeadline() {
         let r = Recorder()
         let deadline = PresentationDeadline(interval: 0.05, notifications: NotificationCenter())

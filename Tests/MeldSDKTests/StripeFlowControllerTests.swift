@@ -454,6 +454,53 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testANewApplePayPaymentThisDeviceCannotMakeStopsBeforeAnyNativeWorkOrClaim() async throws {
+        for (device, cards, reason) in [(false, true, "Apple Pay is not supported on this device."),
+                                         (true, false, "Apple Pay has no usable card on this device.")] {
+            let h = try FlowHarness(applePay: true)
+            h.wallet.device = device; h.wallet.cards = cards
+            h.client.responses = [FlowHarness.bootstrap[0]]
+            do { _ = try await h.flow.run(); XCTFail("Expected an unavailable wallet") }
+            catch let error as PaymentMethodUnavailable { XCTAssertEqual(error.reason, reason) }
+            XCTAssertEqual(h.client.calls.map(\.operation), ["READ_SUBMISSION"])
+            XCTAssertEqual(h.factory.value, 0)
+            XCTAssertTrue(h.driver.calls.isEmpty)
+            XCTAssertTrue(h.forms.calls.isEmpty)
+            XCTAssertFalse(h.store.value.submissionStarted)
+            XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
+            XCTAssertEqual(h.wallet.networks, device ? [StripeNativeOrder.applePayNetworks] : [])
+            await h.flow.close()
+        }
+    }
+
+    func testAWalletThatStopsTakingTheRequestBeforeCollectionIsNeverCollectedFrom() async throws {
+        let h = try FlowHarness(applePay: true)
+        h.driver.onHasAccount = { [wallet = h.wallet] in wallet.cards = false }
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer()]
+        do { _ = try await h.flow.run(); XCTFail("Expected an unavailable wallet") }
+        catch let error as PaymentMethodUnavailable { XCTAssertEqual(error.reason, "Apple Pay has no usable card on this device.") }
+        XCTAssertEqual(h.driver.calls.last, "registerWallet")
+        XCTAssertEqual(h.wallet.networks.count, 2, "checked once before sign-in and again before collection")
+        XCTAssertFalse(h.driver.calls.contains("collectPayment"))
+        XCTAssertFalse(h.client.calls.contains { $0.operation == "CREATE_PAYMENT_SESSION" })
+        XCTAssertFalse(h.store.value.submissionStarted)
+        XCTAssertFalse(h.flow.mayHaveFinancialAttempt)
+        await h.flow.close()
+    }
+
+    func testResumingAnExistingApplePayAttemptNeverAsksWallet() async throws {
+        let h = try FlowHarness(applePay: true)
+        h.wallet.device = false
+        h.client.responses = [FlowHarness.resume(), FlowHarness.authToken, FlowHarness.customer(next: "REFRESH_QUOTE"),
+                              FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.driver.calls, ["authenticate", "checkout"])
+        XCTAssertEqual(h.wallet.deviceChecks, 0)
+        XCTAssertTrue(h.wallet.networks.isEmpty)
+        await h.flow.close()
+    }
+
     func testSubmissionReadPreventsNativeWorkForExistingFinancialOutcomes() async throws {
         for (status, next, expected): (String, String, StripeFlowController.Outcome) in [
             ("SUCCEEDED", "COMPLETE", .completed), ("SUBMITTED", "WAIT_FOR_PAYMENT", .submitted),
@@ -926,6 +973,14 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(unattempted.code, "PRESENTATION_FAILED")
         XCTAssertEqual(unattempted.detail, "invalidResponse")
         XCTAssertFalse(unattempted.recoverable)
+        let unavailable = StripePaymentSession.failure(PaymentMethodUnavailable(reason: "Apple Pay is not supported on this device."),
+                                                       mayHaveFinancialAttempt: false, orderId: "synthetic-order")
+        XCTAssertEqual(unavailable.code, "PAYMENT_METHOD_UNAVAILABLE")
+        XCTAssertEqual(unavailable.message, "Apple Pay is not supported on this device.")
+        XCTAssertFalse(unavailable.attemptMayExist)
+        XCTAssertFalse(unavailable.recoverable)
+        XCTAssertEqual(StripePaymentSession.failure(PaymentMethodUnavailable(reason: "synthetic"), mayHaveFinancialAttempt: true,
+                                                    orderId: "synthetic-order").code, "PAYMENT_OUTCOME_UNKNOWN")
         let foreign = StripePaymentSession.failure(NSError(domain: "SyntheticProvider", code: 7,
             userInfo: [NSLocalizedDescriptionKey: "customer@example.test"]), mayHaveFinancialAttempt: false, orderId: "synthetic-order")
         XCTAssertEqual(foreign.detail, "SyntheticProvider #7")
@@ -968,6 +1023,38 @@ final class StripeFlowControllerTests: XCTestCase {
             XCTAssertNil(root.presentedViewController)
             session.unmount()
         }
+    }
+
+    func testAMountedApplePayOrderThisDeviceCannotPayReportsAnUnavailableMethod() async throws {
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(true) }
+        let root = UIViewController(), window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = root; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let client = FlowClient(), store = FlowStore(), factory = FlowCounter(), wallet = FlowWallet()
+        client.responses = [FlowHarness.bootstrap[0]]
+        wallet.cards = false
+        var events: [String] = [], errors: [MeldError] = []
+        var handlers = MeldEventHandlers(onError: { errors.append($0); events.append("error:\($0.code)") }).gated()
+        let backstop = handlers.sessionEnded
+        handlers.sessionEnded = { events.append("ended"); backstop?($0) }
+        let order = try FlowHarness.order(applePay: true)
+        let session = try StripePaymentSession(order: order, host: root.view, request: try order.paymentRequest(), handlers: handlers,
+            client: client, store: store, factory: {
+                factory.value += 1
+                return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { FlowDriver() }
+            }, probe: wallet.probe)
+        for _ in 0..<100 {
+            if events.contains("ended") { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(events, ["error:PAYMENT_METHOD_UNAVAILABLE", "ended"])
+        XCTAssertEqual(errors.first?.message, "Apple Pay has no usable card on this device.")
+        XCTAssertEqual(errors.first?.attemptMayExist, false)
+        XCTAssertEqual(factory.value, 0)
+        XCTAssertFalse(store.value.submissionStarted)
+        XCTAssertNil(root.presentedViewController)
+        session.unmount()
     }
 
     func testFormsPresentOverTheHostsOwnSheetAndUnmountLeavesThatSheetInPlace() async throws {
@@ -1092,14 +1179,14 @@ final class StripeFlowControllerTests: XCTestCase {
 @MainActor
 private final class FlowHarness {
     let client = FlowClient(), driver = FlowDriver(), forms = FlowForms()
-    let lifetime = StripeFlowLifetime(), factory = FlowCounter()
+    let lifetime = StripeFlowLifetime(), factory = FlowCounter(), wallet = FlowWallet()
     let store: FlowStore
     let flow: StripeFlowController
     init(applePay: Bool = false, registration: Bool = false, store: FlowStore = FlowStore(),
          wire: URLSessionConfiguration? = nil) throws {
         self.store = store
         let order = try Self.order(applePay: applePay, registration: registration)
-        let counter = factory, driver = driver
+        let counter = factory, driver = driver, wallet = wallet
         let request = applePay ? try order.paymentRequest() : nil
         let transport: PaymentActionSending
         if let wire { transport = PaymentActionClient(descriptor: order.actions, configuration: wire) } else { transport = client }
@@ -1107,7 +1194,7 @@ private final class FlowHarness {
                                    factory: {
             counter.value += 1
             return try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver }
-        }, pause: {})
+        }, probe: wallet.probe, pause: {})
     }
     static let bootstrap: [Result<[String: Any], Error>] = [
         .success(["version": 1, "status": "NOT_STARTED", "nextStep": "NONE", "sdk": ["authenticationState": "BOOTSTRAP"]]),
@@ -1164,6 +1251,15 @@ private final class FlowHarness {
 }
 
 private final class FlowCounter { var value = 0 }
+private final class FlowWallet {
+    var device = true, cards = true
+    var deviceChecks = 0
+    var networks: [[PKPaymentNetwork]] = []
+    var probe: WalletProbe {
+        WalletProbe(device: { self.deviceChecks += 1; return self.device },
+                    wallet: { self.networks.append($0); return self.cards })
+    }
+}
 private final class FlowWire: URLProtocol {
     enum Reply { case http(Int, [String: Any]), lost }
     struct Sent { let operation: String?; let key: String? }

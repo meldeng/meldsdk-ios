@@ -1,7 +1,9 @@
 import Foundation
 
-/// Thrown by a sheet factory when this device cannot pay with the order's method.
-struct PaymentMethodUnavailable: Error {}
+/// Thrown before any attempt when this device cannot pay with the order's method. `reason` is the readiness reason.
+struct PaymentMethodUnavailable: Error {
+    let reason: String
+}
 
 /// Shared order lifecycle; adapters supply wallet and hosted surfaces, never financial retry policy.
 /// Like the SDK's UI callbacks, all calls to this session run on the main thread.
@@ -97,8 +99,8 @@ final class WalletPaymentSession: MeldProviderSession {
                             self.submit(payment, completion: completion)
                         }, { [weak self] in self?.sheetFinished() })
                     }
-                } catch is PaymentMethodUnavailable {
-                    fail(MeldErrorCode.paymentMethodUnavailable, "Apple Pay is not available on this device or for this user.")
+                } catch let unavailable as PaymentMethodUnavailable {
+                    fail(MeldErrorCode.paymentMethodUnavailable, unavailable.reason)
                 } catch {
                     fail(MeldErrorCode.presentationFailed, "The payment sheet could not be presented. No payment was attempted.",
                          detail: "PAYMENT_CONTINUATION_UNAVAILABLE")

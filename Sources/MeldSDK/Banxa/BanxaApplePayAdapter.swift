@@ -25,6 +25,7 @@ import os
 struct BanxaApplePayAdapter: MeldAdapter {
     let label = "Banxa Apple Pay (APPLE_PAY / vendor SDK)"
     let capabilities = MeldCapabilities(embeddable: false, surface: "native-applepay", requiresUserGesture: true)
+    var probe = WalletProbe()
 
     private static let logger = Logger(subsystem: "io.meld.sdk", category: "BanxaApplePayAdapter")
 
@@ -79,6 +80,11 @@ struct BanxaApplePayAdapter: MeldAdapter {
         }
 
         let session = BanxaPrimerApplePaySession(orderId: order.id, handlers: handlers)
+        // Where PassKit cannot pay, Primer presents nothing and never calls back, so only the deadline would end the mount.
+        if let reason = MeldApplePayAvailability.unavailableReason(device: probe.device) {
+            DispatchQueue.main.async { session.paymentMethodUnavailable(reason) }
+            return session
+        }
         // Presenting is main-thread work by UIKit's rules and Primer's surface is @MainActor, while
         // mount() is nonisolated. Hop rather than assert isolation: an earlier revision of the sibling
         // adapter used MainActor.assumeIsolated here and trapped the first time it was reached off the
@@ -168,6 +174,13 @@ final class BanxaPrimerApplePaySession: NSObject, MeldProviderSession {
                 self.fail(error)
             }
         }
+    }
+
+    func paymentMethodUnavailable(_ reason: String) {
+        guard !finished else { return }
+        handlers.onError?(MeldError(orderId: orderId, code: MeldErrorCode.paymentMethodUnavailable, message: reason,
+                                    recoverable: false))
+        release()
     }
 
     func paymentMethodShown() {

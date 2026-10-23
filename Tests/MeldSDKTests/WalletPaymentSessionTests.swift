@@ -332,10 +332,11 @@ final class WalletPaymentSessionTests: XCTestCase {
 
     func testApplePayUnavailableBeforeAnyAttemptIsReportedAsSuch() throws {
         let flow = try WalletHarness(gated: true)
-        flow.sheetError = PaymentMethodUnavailable()
+        flow.sheetError = PaymentMethodUnavailable(reason: "Apple Pay has no usable card on this device.")
         flow.session.start()
         flow.client.respond(0, WalletFixtures.response("NOT_STARTED"))
         XCTAssertEqual(flow.errors.map(\.code), ["PAYMENT_METHOD_UNAVAILABLE"])
+        XCTAssertEqual(flow.errors.first?.message, "Apple Pay has no usable card on this device.")
         XCTAssertFalse(try XCTUnwrap(flow.errors.first).recoverable)
         XCTAssertFalse(flow.store.value.submissionStarted)
         XCTAssertEqual(flow.client.finished, 1)

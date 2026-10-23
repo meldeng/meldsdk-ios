@@ -76,9 +76,9 @@ struct MercuryoApplePayAdapter: MeldAdapter {
               let merchant = order.paymentMethodResponseDetails?["merchantIdentifier"] as? String else {
             throw MeldMountError.invalidOrder("A new wallet payment needs a MeldApplePayRequest with the order's amount and currency.")
         }
-        guard MeldApplePayAvailability.unavailableReason(requiring: Self.supportedNetworks, device: probe.device,
-                                                         wallet: probe.wallet) == nil else {
-            throw PaymentMethodUnavailable()
+        if let reason = MeldApplePayAvailability.unavailableReason(requiring: Self.supportedNetworks, device: probe.device,
+                                                                   wallet: probe.wallet) {
+            throw PaymentMethodUnavailable(reason: reason)
         }
         return ApplePayCoordinator(orderId: order.id, merchantIdentifier: merchant, request: request,
                                    merchantCountryCode: "LT", supportedNetworks: Self.supportedNetworks,
@@ -127,7 +127,9 @@ struct MercuryoApplePayAdapter: MeldAdapter {
         } catch {
             client.finish()
             WalletMountOwnership.release(identity)
-            if error is PaymentMethodUnavailable { return UnavailableLegacySession(orderId: id, handlers: handlers) }
+            if let unavailable = error as? PaymentMethodUnavailable {
+                return UnavailableLegacySession(orderId: id, reason: unavailable.reason, handlers: handlers)
+            }
             throw error
         }
     }
@@ -137,13 +139,12 @@ struct MercuryoApplePayAdapter: MeldAdapter {
 private final class UnavailableLegacySession: MeldProviderSession {
     private var active = true
 
-    init(orderId: String, handlers: MeldEventHandlers) {
+    init(orderId: String, reason: String, handlers: MeldEventHandlers) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.active else { return }
             self.active = false
             handlers.onError?(MeldError(orderId: orderId, code: MeldErrorCode.paymentMethodUnavailable,
-                                        message: "Apple Pay is not available on this device or for this user.",
-                                        recoverable: false))
+                                        message: reason, recoverable: false))
         }
     }
 
