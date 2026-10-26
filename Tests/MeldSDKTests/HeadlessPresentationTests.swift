@@ -51,6 +51,7 @@ final class HeadlessPresentationTests: XCTestCase {
             MeldAdapterPresentation("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET"),
             MeldAdapterPresentation("APPLE_PAY", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP"),
             MeldAdapterPresentation("CREDIT_DEBIT_CARD", "NATIVE_SDK", "STRIPE_CRYPTO_ONRAMP"),
+            MeldAdapterPresentation("CREDIT_DEBIT_CARD", "VENDOR_SDK", "COINME_VAULT"),
         ]
         XCTAssertEqual(Set(Meld.adapters.flatMap(\.presentations)), catalog)
     }
@@ -109,6 +110,10 @@ final class HeadlessPresentationTests: XCTestCase {
         // declared under a surface Banxa's adapter does not register is not presented as Banxa.
         try assertUnsupported(order(method: "CREDIT_DEBIT_CARD",
                                     presentation: descriptor("EMBEDDED_WIDGET", "BANXA_CHECKOUT"),
+                                    details: ["renderMode": "IFRAME", "sdkSessionToken": "test-primer-token"]))
+        // A Banxa-shaped payload declared as Coinme is not presented, and is never handed to Banxa.
+        try assertUnsupported(order(method: "CREDIT_DEBIT_CARD",
+                                    presentation: descriptor("VENDOR_SDK", "COINME_VAULT"),
                                     details: ["renderMode": "IFRAME", "sdkSessionToken": "test-primer-token"]))
     }
 
