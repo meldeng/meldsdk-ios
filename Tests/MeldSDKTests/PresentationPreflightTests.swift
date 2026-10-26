@@ -16,6 +16,7 @@ final class PresentationPreflightTests: XCTestCase {
             ("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "MERCURYO_WIDGET", "embedded", true),
             ("CREDIT_DEBIT_CARD", "VENDOR_SDK", "BANXA_CHECKOUT", "native-sdk", false),
             ("CREDIT_DEBIT_CARD", "EMBEDDED_WIDGET", "UPHOLD_WIDGET", "embedded", true),
+            ("CREDIT_DEBIT_CARD", "VENDOR_SDK", "COINME_VAULT", "embedded", true),
         ]
         for (method, surface, protocolName, expectedSurface, embeddable) in examples {
             let caps = Meld.capabilities(for: try presentation(surface, protocolName), paymentMethodType: method)
@@ -47,6 +48,10 @@ final class PresentationPreflightTests: XCTestCase {
         for method in ["CREDIT_DEBIT_CARD", "apple_pay", "APPLE_PAY ", "", "FUTURE_METHOD"] {
             XCTAssertEqual(Meld.capabilities(for: wallet, paymentMethodType: method).surface, "unsupported")
         }
+        XCTAssertEqual(Meld.capabilities(for: try presentation("VENDOR_SDK", "COINME_VAULT"),
+                                        paymentMethodType: "APPLE_PAY").surface, "unsupported")
+        XCTAssertEqual(Meld.capabilities(for: try presentation("VENDOR_SDK", "COINME_VAULT", version: 2),
+                                        paymentMethodType: "CREDIT_DEBIT_CARD").surface, "unsupported")
     }
 
     func testPublicDecoderRejectsMalformedDeclarationsAndPreservesUnknownValues() throws {

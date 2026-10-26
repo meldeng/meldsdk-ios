@@ -42,6 +42,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
     private let firesReadyOnNavigation: Bool
     // Called when WebKit kills the page's content process. Nil leaves the blank page in place.
     private let onContentProcessTerminated: (() -> Void)?
+    private let bridgeInSubframes: Bool
     private weak var webView: WKWebView?
     private var didFireReady = false
 
@@ -53,6 +54,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
          userScripts: [WKUserScript] = [],
          firesReadyOnNavigation: Bool = true,
          onContentProcessTerminated: (() -> Void)? = nil,
+         bridgeInSubframes: Bool = true,
          interpret: @escaping ([String: Any]) -> [MeldEvent]) {
         self.url = url
         self.orderId = orderId
@@ -63,6 +65,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
         self.userScripts = userScripts
         self.firesReadyOnNavigation = firesReadyOnNavigation
         self.onContentProcessTerminated = onContentProcessTerminated
+        self.bridgeInSubframes = bridgeInSubframes
         self.interpret = interpret
         // Always trust the loaded page's own origin; the adapter's set widens it to sibling
         // provider origins (widget vs. exchange host, etc.).
@@ -80,7 +83,7 @@ final class WebViewHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptM
         let userContent = WKUserContentController()
         userContent.add(self, name: Self.bridgeName)
         userContent.addUserScript(
-            WKUserScript(source: bridgeScript(), injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            WKUserScript(source: bridgeScript(), injectionTime: .atDocumentStart, forMainFrameOnly: !bridgeInSubframes))
         for name in nativeMessageHandlers {
             userContent.add(self, name: name)
         }

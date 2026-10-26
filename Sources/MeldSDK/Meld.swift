@@ -210,7 +210,7 @@ public enum Meld {
     static let adapters: [MeldAdapter] = [
         UpholdCardAdapter(), BanxaCardAdapter(), MercuryoCardAdapter(),
         HostedLinkApplePayAdapter(), BanxaApplePayAdapter(), MercuryoApplePayAdapter(),
-        StripeNativeAdapter(),
+        StripeNativeAdapter(), CoinmeCardAdapter(),
     ]
     private static let registry: MeldAdapterRegistry = {
         do { return try MeldAdapterRegistry(adapters) }

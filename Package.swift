@@ -40,6 +40,8 @@ let package = Package(
                 // Primer ships no theme; without it every var(--primer-*) is undefined and the card
                 // form renders unstyled. Extracted from the bundle above and pinned with it.
                 .copy("Resources/banxa-primer-theme.css"),
+                // Meld's own web SDK, whose Coinme flow runs in the WebView for Coinme card orders.
+                .copy("Resources/meld-web-sdk.bundle.js"),
             ]
         ),
         .testTarget(name: "MeldSDKTests", dependencies: ["MeldSDK"], path: "Tests/MeldSDKTests"),

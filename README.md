@@ -10,8 +10,9 @@ or transports PAN/CVC, and never reaches into the provider's content. Card captu
 entirely on the provider's PCI surface.
 
 **Implemented surfaces:** Mercuryo and Uphold card widgets, Banxa card and Apple Pay,
-Mercuryo native Apple Pay, Coinbase-hosted Apple Pay, and the Stripe crypto onramp (Apple Pay and
-card). Use the returned capabilities to check whether this SDK build can present a particular order.
+Mercuryo native Apple Pay, Coinbase-hosted Apple Pay, the Stripe crypto onramp (Apple Pay and
+card), and Coinme card. Use the returned capabilities to check whether this SDK build can present a
+particular order.
 
 > **Building in React Native?** You don't use this Swift API directly — use the
 > [@meldcrypto/react-native-sdk](https://github.com/meldeng/meldsdk-react-native) wrapper
@@ -24,7 +25,7 @@ and add the **MeldSDK** library to your app target. Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.10.0"),
+    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.11.0"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -37,7 +38,7 @@ targets: [
 (This is also how the React Native wrapper consumes the SDK.)
 
 ```ruby
-pod 'MeldSDK', '~> 0.10.0'
+pod 'MeldSDK', '~> 0.11.0'
 ```
 
 Then `import MeldSDK`.
@@ -499,6 +500,32 @@ Time the sheet holds your app inactive does not count toward the 180 s. After
 `onPaymentSubmitted` the provider's page keeps confirming the payment. If you release the handle
 then, the SDK keeps the page running until the provider reports its polling outcome or 60 s pass.
 That outcome is logged, not delivered, so unmounting on `onPaymentSubmitted` is safe.
+
+### Coinme card
+
+A `COINME_VAULT` order (`VENDOR_SDK / COINME_VAULT / 1`, `CREDIT_DEBIT_CARD`) runs Coinme's checkout in a
+WKWebView inside the view you pass as `into:`, the way Banxa's card checkout runs: the bundled Meld web
+SDK shows the customer's saved Coinme cards and "Use a new card", Coinme's secure card fields (VGS
+iframes, so card data never reaches this SDK or your app) and Coinme's Risk session. No Coinme library is
+added to your app. `Meld.capabilities(for: order)` reports `surface == "embedded"` only when the order
+declares both `CREATE_CUSTOMER_AUTH_TOKEN` and `CREATE_PAYMENT_SESSION` and its Coinme environment matches
+`Meld.configure` (`live` with `.production`, `sandbox` otherwise); `mount` throws
+`MeldMountError.missingHost` without a host. The checkout's payment actions go through the SDK to the
+order's own endpoint with the order's bearer.
+
+| Outcome | Callback |
+|---|---|
+| Payment created | `onPaymentSubmitted` |
+| Coinme refused the card (for example in use by another customer, or too many cards) or the payment | `onError(PAYMENT_REJECTED)` |
+| A newly added card was still being verified after 3 minutes | `onError(VERIFICATION_PENDING)` |
+| The order can no longer be paid | `onError(ORDER_STATE_CHANGED)` |
+| Coinme's checkout or service could not be reached | `onError(PROVIDER_LOAD_FAILED)` |
+| Any other failure before the payment was requested | `onError(PRESENTATION_FAILED)` |
+| No readable answer once the payment was requested | `onError(PAYMENT_OUTCOME_UNKNOWN)` |
+
+Coinme's Risk SDK collects device and behavioral signals in the checkout page for fraud prevention: in
+App Store Connect > App Privacy, declare **Identifiers > Device ID**, purpose App Functionality, linked to
+the user's identity, and link Coinme's privacy policy from your app's privacy policy.
 
 ### Public calls
 

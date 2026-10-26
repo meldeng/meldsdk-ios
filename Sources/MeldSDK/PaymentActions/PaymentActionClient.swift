@@ -64,7 +64,8 @@ struct PaymentActionDescriptor: CustomStringConvertible {
               let declarations = raw["operations"] as? [[String: Any]], !declarations.isEmpty
         else { throw PaymentActionError.invalidDescriptor }
         let path = url.path.components(separatedBy: "/")
-        guard path.count == 8, Array(path.prefix(5)) == ["", "crypto", "order", "headless", "onramp"],
+        guard path.count == 8, Array(path.prefix(4)) == ["", "crypto", "order", "headless"],
+              ["onramp", "offramp"].contains(path[4]),
               !path[5].isEmpty, path[6] == orderID, path[7] == "actions",
               order.serviceProvider == nil || order.serviceProvider == path[5]
         else { throw PaymentActionError.invalidDescriptor }
@@ -159,6 +160,21 @@ final class PaymentActionClient: PaymentActionSending {
                         PaymentActionJSON.integer(json["version"]) == 1 { result = .success(json) }
                 else { result = .failure(PaymentActionError.invalidResponse) }
             } else { result = .failure(PaymentActionError.invalidResponse) }
+            DispatchQueue.main.async { completion(result) }
+        }.resume()
+    }
+
+    /// The raw response to an action the order declares, for a caller that decodes it itself (the web SDK
+    /// hosted in a WebView); nil when there is none. Completes on the main queue.
+    func relay(_ operation: String, fields: [String: Any], key: UUID?,
+               completion: @escaping ((status: Int, body: String?)?) -> Void) {
+        let request: URLRequest
+        do { request = try descriptor.request(operation: operation, fields: fields, key: key) }
+        catch { DispatchQueue.main.async { completion(nil) }; return }
+        session.dataTask(with: request) { data, response, error in
+            let result = (error == nil ? response as? HTTPURLResponse : nil).map { response in
+                (status: response.statusCode, body: data.flatMap { $0.count <= 65536 ? String(data: $0, encoding: .utf8) : nil })
+            }
             DispatchQueue.main.async { completion(result) }
         }.resume()
     }
