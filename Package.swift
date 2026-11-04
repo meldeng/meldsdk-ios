@@ -44,6 +44,6 @@ let package = Package(
                 .copy("Resources/meld-web-sdk.bundle.js"),
             ]
         ),
-        .testTarget(name: "MeldSDKTests", dependencies: ["MeldSDK"], path: "Tests/MeldSDKTests"),
+        .testTarget(name: "MeldSDKTests", dependencies: ["MeldSDK"], path: "Tests/MeldSDKTests", exclude: ["Fixtures"]),
     ]
 )

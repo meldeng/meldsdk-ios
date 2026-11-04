@@ -1,0 +1,69 @@
+{
+  "fixture": "requirements/duenetwork-hosted-terms",
+  "contract": "kyc-dx-contract C5",
+  "meldVersion": "2026-11-01",
+  "description": "Due approved the customer but its own terms are still pending (TosStatus=pending); no order. Due states no expiry, so the OPEN_URL has none.",
+  "request": {
+    "method": "GET",
+    "path": "/crypto/onramp/DUENETWORK/requirements",
+    "query": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z"
+    }
+  },
+  "responseHeaders": {
+    "Meld-Version": "2026-11-01"
+  },
+  "responseMembers": [
+    "serviceProvider",
+    "eligible",
+    "requirements"
+  ],
+  "absentKeys": [
+    "kycRequirements"
+  ],
+  "response": {
+    "serviceProvider": "DUENETWORK",
+    "eligible": false,
+    "requirements": [
+      {
+        "type": "MELD_KYC",
+        "code": "MELD_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER",
+        "level": "LEVEL_2",
+        "currentLevel": "LEVEL_2"
+      },
+      {
+        "type": "PROVIDER_KYC_SHARE",
+        "code": "PROVIDER_KYC_SHARE",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "AGREEMENT",
+        "code": "DUENETWORK_HOSTED_TERMS",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "action": {
+          "type": "OPEN_URL",
+          "url": "https://app.due.test/tos?session=fixture",
+          "refresh": {
+            "method": "POST",
+            "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+            "body": {
+              "targetServiceProviders": [
+                "DUENETWORK"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "PROVIDER_REVIEW",
+        "code": "PROVIDER_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      }
+    ]
+  }
+}

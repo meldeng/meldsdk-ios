@@ -1,0 +1,185 @@
+{
+  "fixture": "requirements-session/uphold-after-terms-and-details",
+  "contract": "kyc-dx-contract C7",
+  "meldVersion": "2026-11-01",
+  "description": "Uphold once its terms are accepted and the email is set: those steps are gone and Meld KYC is next.",
+  "tokenIssuedAt": "2026-11-04T14:58:30Z",
+  "mint": {
+    "request": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "order": {
+        "paymentMethodType": "CREDIT_DEBIT_CARD",
+        "sourceCurrencyCode": "USD",
+        "sourceAmount": 250,
+        "destinationCurrencyCode": "USDC",
+        "destinationNetworkCode": "BASE",
+        "countryCode": "US"
+      }
+    },
+    "status": 201,
+    "response": {
+      "id": "Jt5UaX9cPd4SwLy7ZnQb3f",
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "readyWhen": "ALL",
+      "expiresAt": "2026-11-04T15:28:30Z",
+      "token": "eyJhbGciOiJIUzI1NiJ9.fixture.requirements-session-token",
+      "requirementsActions": {
+        "version": 1,
+        "endpoint": "/crypto/onramp/requirements-sessions/Jt5UaX9cPd4SwLy7ZnQb3f/actions",
+        "bearerTokenPointer": "/token",
+        "operations": [
+          {
+            "operation": "READ",
+            "idempotencyKeyRequired": false
+          },
+          {
+            "operation": "RUN_STEP",
+            "idempotencyKeyRequired": true
+          }
+        ]
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:00:25Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "ACTION_REQUIRED",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 4000,
+        "providers": [
+          {
+            "serviceProvider": "UPHOLD",
+            "status": "ACTION_REQUIRED",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "action": {
+                  "type": "CALL",
+                  "method": "POST",
+                  "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+                  "body": {
+                    "targetServiceProviders": [
+                      "UPHOLD"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "MELD_KYC_APPROVED"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "PROVIDER_KYC_SHARE"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [
+          {
+            "stepId": "*:MELD_KYC:MELD_KYC_APPROVED",
+            "kind": "SUBMIT",
+            "type": "MELD_KYC",
+            "code": "MELD_KYC_APPROVED",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "level": "LEVEL_2"
+          }
+        ],
+        "waitingOn": []
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:40Z",
+      "idempotencyKey": "7d5a6f0e-2b1c-4d54-9e6f-9a0b1c2d3e45",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "*:MELD_KYC:MELD_KYC_APPROVED"
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "POST",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+          "meldVersion": "2026-11-01",
+          "body": {
+            "targetServiceProviders": [
+              "UPHOLD"
+            ],
+            "order": {
+              "paymentMethodType": "CREDIT_DEBIT_CARD",
+              "sourceCurrencyCode": "USD",
+              "sourceAmount": 250,
+              "destinationCurrencyCode": "USDC",
+              "destinationNetworkCode": "BASE",
+              "countryCode": "US"
+            }
+          },
+          "status": 200,
+          "response": {
+            "customerId": "W9kL817BBS7bNEwxAZaX4z",
+            "serviceProvider": "SUMSUB",
+            "status": "PENDING",
+            "url": "https://in.sumsub.com/websdk/p/sbx_fixture_1",
+            "level": "LEVEL_2",
+            "expiresAt": "2026-11-04T15:30:00Z"
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "*:MELD_KYC:MELD_KYC_APPROVED",
+        "outcome": "OPEN_URL",
+        "url": "https://in.sumsub.com/websdk/p/sbx_fixture_1",
+        "expiresAt": "2026-11-04T15:30:00Z"
+      }
+    }
+  ]
+}

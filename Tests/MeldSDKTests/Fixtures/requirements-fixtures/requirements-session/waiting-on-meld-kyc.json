@@ -1,0 +1,152 @@
+{
+  "fixture": "requirements-session/waiting-on-meld-kyc",
+  "contract": "kyc-dx-contract C7",
+  "meldVersion": "2026-11-01",
+  "description": "Banxa after the customer submitted Sumsub: only a wait is left; a RUN_STEP for the old step is refused.",
+  "tokenIssuedAt": "2026-11-04T14:58:30Z",
+  "mint": {
+    "request": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "BANXA"
+      ],
+      "order": {
+        "paymentMethodType": "CREDIT_DEBIT_CARD",
+        "sourceCurrencyCode": "USD",
+        "sourceAmount": 250,
+        "destinationCurrencyCode": "USDC",
+        "destinationNetworkCode": "BASE",
+        "countryCode": "US"
+      }
+    },
+    "status": 201,
+    "response": {
+      "id": "Kv6VbY2dQe5TxMz8AoRc4g",
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "BANXA"
+      ],
+      "readyWhen": "ALL",
+      "expiresAt": "2026-11-04T15:28:30Z",
+      "token": "eyJhbGciOiJIUzI1NiJ9.fixture.requirements-session-token",
+      "requirementsActions": {
+        "version": 1,
+        "endpoint": "/crypto/onramp/requirements-sessions/Kv6VbY2dQe5TxMz8AoRc4g/actions",
+        "bearerTokenPointer": "/token",
+        "operations": [
+          {
+            "operation": "READ",
+            "idempotencyKeyRequired": false
+          },
+          {
+            "operation": "RUN_STEP",
+            "idempotencyKeyRequired": true
+          }
+        ]
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:03:30Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "WAITING",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 15000,
+        "providers": [
+          {
+            "serviceProvider": "BANXA",
+            "status": "WAITING",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "VERIFICATION",
+                "code": "EMAIL",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "MELD_KYC_APPROVED"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "PROVIDER_KYC_SHARE"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [],
+        "waitingOn": [
+          {
+            "stepId": "*:MELD_KYC:MELD_KYC_APPROVED",
+            "type": "MELD_KYC",
+            "code": "MELD_KYC_APPROVED",
+            "serviceProviders": [
+              "BANXA"
+            ],
+            "event": "CUSTOMER_KYC_STATUS_CHANGE"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:03:35Z",
+      "idempotencyKey": "8e6b7a1f-3c2d-4e65-8f7a-0b1c2d3e4f56",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "*:MELD_KYC:MELD_KYC_APPROVED"
+      },
+      "upstream": [],
+      "status": 409,
+      "response": {
+        "version": 1,
+        "code": "CONCURRENT_STATE_CHANGE"
+      }
+    }
+  ]
+}

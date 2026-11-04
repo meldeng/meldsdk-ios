@@ -1,0 +1,297 @@
+{
+  "fixture": "requirements-session/uphold-fresh",
+  "contract": "kyc-dx-contract C7",
+  "meldVersion": "2026-11-01",
+  "description": "Uphold, a fresh customer: its terms and email come before the share, and Meld KYC waits on neither.",
+  "tokenIssuedAt": "2026-11-04T14:58:30Z",
+  "mint": {
+    "request": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "order": {
+        "paymentMethodType": "CREDIT_DEBIT_CARD",
+        "sourceCurrencyCode": "USD",
+        "sourceAmount": 250,
+        "destinationCurrencyCode": "USDC",
+        "destinationNetworkCode": "BASE",
+        "countryCode": "US"
+      }
+    },
+    "status": 201,
+    "response": {
+      "id": "Hq4TzW8bNc3RvKx6YmPa2d",
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "readyWhen": "ALL",
+      "expiresAt": "2026-11-04T15:28:30Z",
+      "token": "eyJhbGciOiJIUzI1NiJ9.fixture.requirements-session-token",
+      "requirementsActions": {
+        "version": 1,
+        "endpoint": "/crypto/onramp/requirements-sessions/Hq4TzW8bNc3RvKx6YmPa2d/actions",
+        "bearerTokenPointer": "/token",
+        "operations": [
+          {
+            "operation": "READ",
+            "idempotencyKeyRequired": false
+          },
+          {
+            "operation": "RUN_STEP",
+            "idempotencyKeyRequired": true
+          }
+        ]
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:00:00Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "ACTION_REQUIRED",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 4000,
+        "providers": [
+          {
+            "serviceProvider": "UPHOLD",
+            "status": "ACTION_REQUIRED",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "AGREEMENT",
+                "code": "general-us",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "url": "https://uphold.test/tos-us",
+                "action": {
+                  "type": "CALL",
+                  "method": "POST",
+                  "path": "/accounts/terms-of-service/acceptances",
+                  "body": {
+                    "serviceProvider": "UPHOLD",
+                    "code": "general-us"
+                  }
+                }
+              },
+              {
+                "type": "CUSTOMER_DETAILS",
+                "code": "CUSTOMER_EMAIL",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "missingFields": [
+                  {
+                    "key": "email",
+                    "source": "INTEGRATOR"
+                  }
+                ],
+                "action": {
+                  "type": "CALL",
+                  "method": "PATCH",
+                  "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z"
+                }
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "action": {
+                  "type": "CALL",
+                  "method": "POST",
+                  "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+                  "body": {
+                    "targetServiceProviders": [
+                      "UPHOLD"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "MELD_KYC_APPROVED",
+                  "general-us",
+                  "CUSTOMER_EMAIL"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "PROVIDER_KYC_SHARE"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [
+          {
+            "stepId": "UPHOLD:AGREEMENT:general-us",
+            "kind": "AGREE",
+            "type": "AGREEMENT",
+            "code": "general-us",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "url": "https://uphold.test/tos-us"
+          },
+          {
+            "stepId": "*:CUSTOMER_DETAILS:CUSTOMER_EMAIL",
+            "kind": "COLLECT",
+            "type": "CUSTOMER_DETAILS",
+            "code": "CUSTOMER_EMAIL",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "fields": [
+              {
+                "key": "email"
+              }
+            ]
+          },
+          {
+            "stepId": "*:MELD_KYC:MELD_KYC_APPROVED",
+            "kind": "SUBMIT",
+            "type": "MELD_KYC",
+            "code": "MELD_KYC_APPROVED",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "level": "LEVEL_2"
+          }
+        ],
+        "waitingOn": []
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:05Z",
+      "idempotencyKey": "4a2d3c7b-9e8f-4a21-8b3c-6d7e8f9a0b12",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "*:CUSTOMER_DETAILS:CUSTOMER_EMAIL",
+        "fields": {
+          "email": "not-an-email"
+        }
+      },
+      "upstream": [],
+      "status": 400,
+      "response": {
+        "version": 1,
+        "code": "INVALID_REQUEST",
+        "fieldErrors": [
+          {
+            "key": "email",
+            "reason": "INVALID"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:10Z",
+      "idempotencyKey": "5b3e4d8c-0f9a-4b32-9c4d-7e8f9a0b1c23",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "UPHOLD:AGREEMENT:general-us",
+        "accepted": true
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "POST",
+          "path": "/accounts/terms-of-service/acceptances",
+          "meldVersion": "2023-07-19",
+          "body": {
+            "externalCustomerId": "ext-1001",
+            "serviceProvider": "UPHOLD",
+            "code": "general-us",
+            "acceptedAt": "2026-11-04T15:00:10Z",
+            "ipAddress": "203.0.113.7",
+            "source": "END_USER",
+            "details": {
+              "recordedBy": "MELD_SDK"
+            }
+          },
+          "status": 201,
+          "response": {
+            "customerId": "W9kL817BBS7bNEwxAZaX4z",
+            "code": "general-us",
+            "acceptedAt": "2026-11-04T15:00:10Z"
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "UPHOLD:AGREEMENT:general-us",
+        "outcome": "DONE"
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:20Z",
+      "idempotencyKey": "6c4f5e9d-1a0b-4c43-8d5e-8f9a0b1c2d34",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "*:CUSTOMER_DETAILS:CUSTOMER_EMAIL",
+        "fields": {
+          "email": "ada@example.com"
+        }
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "PATCH",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z",
+          "meldVersion": "2023-07-19",
+          "body": {
+            "email": "ada@example.com"
+          },
+          "status": 200,
+          "response": {
+            "id": "W9kL817BBS7bNEwxAZaX4z"
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "*:CUSTOMER_DETAILS:CUSTOMER_EMAIL",
+        "outcome": "DONE"
+      }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "fixture": "requirements/noah-hosted-onboarding",
+  "contract": "kyc-dx-contract C5",
+  "meldVersion": "2026-11-01",
+  "description": "Noah after the share, with its hosted onboarding open; no order (virtual account).",
+  "request": {
+    "method": "GET",
+    "path": "/crypto/onramp/NOAH/requirements",
+    "query": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z"
+    }
+  },
+  "responseHeaders": {
+    "Meld-Version": "2026-11-01"
+  },
+  "responseMembers": [
+    "serviceProvider",
+    "eligible",
+    "requirements"
+  ],
+  "absentKeys": [
+    "kycRequirements"
+  ],
+  "response": {
+    "serviceProvider": "NOAH",
+    "eligible": false,
+    "requirements": [
+      {
+        "type": "MELD_KYC",
+        "code": "MELD_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER",
+        "level": "LEVEL_2",
+        "currentLevel": "LEVEL_2"
+      },
+      {
+        "type": "PROVIDER_KYC_SHARE",
+        "code": "PROVIDER_KYC_SHARE",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "EXTERNAL_KYC",
+        "code": "NOAH_HOSTED_ONBOARDING",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "action": {
+          "type": "OPEN_URL",
+          "url": "https://onboarding.noah.test/hosted?session=fixture-1",
+          "expiresAt": "2026-11-04T15:45:00Z",
+          "refresh": {
+            "method": "POST",
+            "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+            "body": {
+              "targetServiceProviders": [
+                "NOAH"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "PROVIDER_REVIEW",
+        "code": "PROVIDER_KYC_APPROVED",
+        "status": "PENDING",
+        "timing": "PRE_ORDER",
+        "dependsOn": [
+          "NOAH_HOSTED_ONBOARDING"
+        ],
+        "action": {
+          "type": "WAIT",
+          "event": "CUSTOMER_KYC_STATUS_CHANGE"
+        }
+      }
+    ]
+  }
+}

@@ -23,6 +23,7 @@ final class HostedVerificationPresenter: NSObject, MeldProviderSession, SFSafari
     private var active = true
     private var opened = false
     private let url: URL
+    private let closesOnLoadFailure: Bool
     private let onOpen: () -> Bool
     private let onClose: (Bool) -> Void
 
@@ -32,14 +33,20 @@ final class HostedVerificationPresenter: NSObject, MeldProviderSession, SFSafari
                       onOpen: onOpen, onClose: onClose)
     }
 
-    init(url: URL, prompt: Prompt, anchor: UIViewController?, host: UIView?, onOpen: @escaping () -> Bool,
-         onClose: @escaping (Bool) -> Void) throws {
+    /// Without a prompt the page opens on the next main-queue turn.
+    init(url: URL, prompt: Prompt?, anchor: UIViewController?, host: UIView?, closesOnLoadFailure: Bool = false,
+         onOpen: @escaping () -> Bool, onClose: @escaping (Bool) -> Void) throws {
         self.url = url
+        self.closesOnLoadFailure = closesOnLoadFailure
         self.onOpen = onOpen
         self.onClose = onClose
         super.init()
         guard let top = Self.top(anchor: anchor, host: host) else { throw PaymentActionError.invalidResponse }
         presenter = top
+        guard let prompt else {
+            DispatchQueue.main.async { [weak self] in self?.open() }
+            return
+        }
         let alert = UIAlertController(title: prompt.title, message: prompt.message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.closed() })
         alert.addAction(UIAlertAction(title: "Continue", style: .default) { [weak self] _ in self?.proceed() })
@@ -61,21 +68,28 @@ final class HostedVerificationPresenter: NSObject, MeldProviderSession, SFSafari
     /// The prompt's Continue: opens the page once the prompt is gone.
     func proceed() {
         guard active, let alert = presented as? UIAlertController else { return }
-        afterDismissing(alert) { [weak self] in
-            guard let self, self.active else { return }
-            guard let presenter = self.presenter, presenter.viewIfLoaded?.window != nil,
-                  presenter.presentedViewController == nil else { self.closed(); return }
-            guard self.onOpen() else { self.unmount(); return }
-            self.opened = true
-            let browser = SFSafariViewController(url: self.url)
-            browser.delegate = self
-            self.presented = browser
-            presenter.present(browser, animated: true)
-            browser.presentationController?.delegate = self
+        afterDismissing(alert) { [weak self] in self?.open() }
+    }
+
+    private func open() {
+        guard active else { return }
+        guard let presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else {
+            closed()
+            return
         }
+        guard onOpen() else { unmount(); return }
+        opened = true
+        let browser = SFSafariViewController(url: url)
+        browser.delegate = self
+        presented = browser
+        presenter.present(browser, animated: true)
+        browser.presentationController?.delegate = self
     }
 
     func safariViewControllerDidFinish(_ controller: SFSafariViewController) { closed() }
+    func safariViewController(_ controller: SFSafariViewController, didCompleteInitialLoad didLoadSuccessfully: Bool) {
+        if !didLoadSuccessfully, closesOnLoadFailure { closed() }
+    }
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { closed() }
 
     private func afterDismissing(_ controller: UIViewController, completion: @escaping () -> Void) {

@@ -1,0 +1,120 @@
+{
+  "fixture": "requirements/uphold-fresh",
+  "contract": "kyc-dx-contract C5",
+  "meldVersion": "2026-11-01",
+  "description": "Uphold for a fresh customer with an order intent, on Meld-Version 2026-11-01.",
+  "request": {
+    "method": "GET",
+    "path": "/crypto/onramp/UPHOLD/requirements",
+    "query": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "paymentMethodType": "CREDIT_DEBIT_CARD",
+      "sourceCurrencyCode": "USD",
+      "sourceAmount": "250",
+      "destinationCurrencyCode": "USDC",
+      "destinationNetworkCode": "BASE",
+      "countryCode": "US"
+    }
+  },
+  "responseHeaders": {
+    "Meld-Version": "2026-11-01"
+  },
+  "responseMembers": [
+    "serviceProvider",
+    "eligible",
+    "requirements"
+  ],
+  "absentKeys": [
+    "kycRequirements"
+  ],
+  "response": {
+    "serviceProvider": "UPHOLD",
+    "eligible": false,
+    "requirements": [
+      {
+        "type": "ORDER_ROUTE",
+        "code": "ORDER_ROUTE",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "AGREEMENT",
+        "code": "general-us",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "url": "https://uphold.test/tos-us",
+        "action": {
+          "type": "CALL",
+          "method": "POST",
+          "path": "/accounts/terms-of-service/acceptances",
+          "body": {
+            "serviceProvider": "UPHOLD",
+            "code": "general-us"
+          }
+        }
+      },
+      {
+        "type": "CUSTOMER_DETAILS",
+        "code": "CUSTOMER_EMAIL",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "missingFields": [
+          {
+            "key": "email",
+            "source": "INTEGRATOR"
+          }
+        ],
+        "action": {
+          "type": "CALL",
+          "method": "PATCH",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z"
+        }
+      },
+      {
+        "type": "MELD_KYC",
+        "code": "MELD_KYC_APPROVED",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "level": "LEVEL_2",
+        "action": {
+          "type": "CALL",
+          "method": "POST",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+          "body": {
+            "targetServiceProviders": [
+              "UPHOLD"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PROVIDER_KYC_SHARE",
+        "code": "PROVIDER_KYC_SHARE",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "dependsOn": [
+          "MELD_KYC_APPROVED",
+          "general-us",
+          "CUSTOMER_EMAIL"
+        ],
+        "action": {
+          "type": "WAIT",
+          "event": "CUSTOMER_KYC_STATUS_CHANGE"
+        }
+      },
+      {
+        "type": "PROVIDER_REVIEW",
+        "code": "PROVIDER_KYC_APPROVED",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "dependsOn": [
+          "PROVIDER_KYC_SHARE"
+        ],
+        "action": {
+          "type": "WAIT",
+          "event": "CUSTOMER_KYC_STATUS_CHANGE"
+        }
+      }
+    ]
+  }
+}

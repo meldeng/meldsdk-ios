@@ -1,0 +1,636 @@
+{
+  "fixture": "requirements-session/uphold-progressive-forms",
+  "contract": "kyc-dx-contract C7",
+  "meldVersion": "2026-11-01",
+  "description": "Uphold after the share, asking for its own forms (customer due diligence, tax details): each is a COLLECT field keyed by the process, carrying the JSON Schema of the one section the form asks now (the newest in the hint account-domain serves, never its formId or the sections already answered), and its value is that section's answers as JSON text. Due diligence asks a second section after the first, then Uphold reviews.",
+  "tokenIssuedAt": "2026-11-04T14:58:30Z",
+  "mint": {
+    "request": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "order": {
+        "paymentMethodType": "CREDIT_DEBIT_CARD",
+        "sourceCurrencyCode": "USD",
+        "sourceAmount": 250,
+        "destinationCurrencyCode": "USDC",
+        "destinationNetworkCode": "BASE",
+        "countryCode": "US"
+      }
+    },
+    "status": 201,
+    "response": {
+      "id": "Qa3AgD7iVk2YcSe5FtWh9n",
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "UPHOLD"
+      ],
+      "readyWhen": "ALL",
+      "expiresAt": "2026-11-04T15:28:30Z",
+      "token": "eyJhbGciOiJIUzI1NiJ9.fixture.requirements-session-token",
+      "requirementsActions": {
+        "version": 1,
+        "endpoint": "/crypto/onramp/requirements-sessions/Qa3AgD7iVk2YcSe5FtWh9n/actions",
+        "bearerTokenPointer": "/token",
+        "operations": [
+          {
+            "operation": "READ",
+            "idempotencyKeyRequired": false
+          },
+          {
+            "operation": "RUN_STEP",
+            "idempotencyKeyRequired": true
+          }
+        ]
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:00:00Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "GET",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details",
+          "meldVersion": "2023-07-19",
+          "status": 200,
+          "response": {
+            "summaryStatus": "pending",
+            "requirements": [
+              {
+                "code": "customer-due-diligence",
+                "camelKey": "customerDueDiligence",
+                "status": "pending",
+                "schema": {
+                  "formId": "cdd-form-1",
+                  "schema": {
+                    "type": "object",
+                    "maxProperties": 1,
+                    "properties": {
+                      "employment": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "employed",
+                              "self-employed",
+                              "unemployed",
+                              "retired",
+                              "student"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "employment"
+                    ]
+                  }
+                }
+              },
+              {
+                "code": "tax-details",
+                "camelKey": "taxDetails",
+                "status": "pending",
+                "schema": {
+                  "formId": "tax-form-1",
+                  "schema": {
+                    "type": "object",
+                    "maxProperties": 1,
+                    "properties": {
+                      "taxResidency": {
+                        "type": "object",
+                        "properties": {
+                          "country": {
+                            "type": "string",
+                            "pattern": "^[A-Z]{2}$"
+                          }
+                        },
+                        "required": [
+                          "country"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taxResidency"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "ACTION_REQUIRED",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 4000,
+        "providers": [
+          {
+            "serviceProvider": "UPHOLD",
+            "status": "ACTION_REQUIRED",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "currentLevel": "LEVEL_2"
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "PROVIDER_EXTRA_FIELDS",
+                "code": "PROVIDER_EXTRA_KYC",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "processes": [
+                  "customerDueDiligence",
+                  "taxDetails"
+                ],
+                "processStates": [
+                  {
+                    "code": "customerDueDiligence",
+                    "status": "pending",
+                    "model": "uphold-verified"
+                  },
+                  {
+                    "code": "taxDetails",
+                    "status": "pending",
+                    "model": "uphold-verified"
+                  }
+                ],
+                "action": {
+                  "type": "CALL",
+                  "method": "PATCH",
+                  "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details"
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "PROVIDER_EXTRA_KYC"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [
+          {
+            "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+            "kind": "COLLECT",
+            "type": "PROVIDER_EXTRA_FIELDS",
+            "code": "PROVIDER_EXTRA_KYC",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "fields": [
+              {
+                "key": "customerDueDiligence",
+                "jsonSchema": "{\"type\":\"object\",\"maxProperties\":1,\"properties\":{\"employment\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"employed\",\"self-employed\",\"unemployed\",\"retired\",\"student\"]}},\"required\":[\"status\"]}},\"required\":[\"employment\"]}"
+              },
+              {
+                "key": "taxDetails",
+                "jsonSchema": "{\"type\":\"object\",\"maxProperties\":1,\"properties\":{\"taxResidency\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\",\"pattern\":\"^[A-Z]{2}$\"}},\"required\":[\"country\"]}},\"required\":[\"taxResidency\"]}"
+              }
+            ]
+          }
+        ],
+        "waitingOn": []
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:30Z",
+      "idempotencyKey": "5f3c4b8a-0d9e-4fdc-9a0b-7c8d9e0f1a23",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+        "fields": {
+          "customerDueDiligence": "{\"employment\":{\"status\":\"employed\"}}",
+          "taxDetails": "{\"taxResidency\":{\"country\":\"US\"}}"
+        }
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "PATCH",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details",
+          "meldVersion": "2023-07-19",
+          "body": {
+            "processes": [
+              {
+                "code": "customer-due-diligence",
+                "sections": {
+                  "employment": {
+                    "status": "employed"
+                  }
+                }
+              },
+              {
+                "code": "tax-details",
+                "sections": {
+                  "taxResidency": {
+                    "country": "US"
+                  }
+                }
+              }
+            ]
+          },
+          "status": 200,
+          "response": {
+            "summaryStatus": "pending",
+            "requirements": [
+              {
+                "code": "customer-due-diligence",
+                "camelKey": "customerDueDiligence",
+                "status": "pending",
+                "schema": {
+                  "formId": "cdd-form-2",
+                  "schema": {
+                    "type": "object",
+                    "maxProperties": 1,
+                    "properties": {
+                      "employment": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "employed",
+                              "self-employed",
+                              "unemployed",
+                              "retired",
+                              "student"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      },
+                      "funds": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "salary",
+                              "savings",
+                              "investments",
+                              "other"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "funds"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+        "outcome": "DONE"
+      }
+    },
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:00:35Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "GET",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details",
+          "meldVersion": "2023-07-19",
+          "status": 200,
+          "response": {
+            "summaryStatus": "pending",
+            "requirements": [
+              {
+                "code": "customer-due-diligence",
+                "camelKey": "customerDueDiligence",
+                "status": "pending",
+                "schema": {
+                  "formId": "cdd-form-2",
+                  "schema": {
+                    "type": "object",
+                    "maxProperties": 1,
+                    "properties": {
+                      "employment": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "employed",
+                              "self-employed",
+                              "unemployed",
+                              "retired",
+                              "student"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      },
+                      "funds": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "salary",
+                              "savings",
+                              "investments",
+                              "other"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "funds"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "ACTION_REQUIRED",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 15000,
+        "providers": [
+          {
+            "serviceProvider": "UPHOLD",
+            "status": "ACTION_REQUIRED",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "currentLevel": "LEVEL_2"
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "PROVIDER_EXTRA_FIELDS",
+                "code": "PROVIDER_EXTRA_KYC",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "processes": [
+                  "customerDueDiligence"
+                ],
+                "processStates": [
+                  {
+                    "code": "customerDueDiligence",
+                    "status": "pending",
+                    "model": "uphold-verified"
+                  },
+                  {
+                    "code": "taxDetails",
+                    "status": "ok",
+                    "model": "uphold-verified"
+                  }
+                ],
+                "action": {
+                  "type": "CALL",
+                  "method": "PATCH",
+                  "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details"
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "PROVIDER_EXTRA_KYC"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [
+          {
+            "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+            "kind": "COLLECT",
+            "type": "PROVIDER_EXTRA_FIELDS",
+            "code": "PROVIDER_EXTRA_KYC",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "fields": [
+              {
+                "key": "customerDueDiligence",
+                "jsonSchema": "{\"type\":\"object\",\"maxProperties\":1,\"properties\":{\"funds\":{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\",\"enum\":[\"salary\",\"savings\",\"investments\",\"other\"]}},\"required\":[\"source\"]}},\"required\":[\"funds\"]}"
+              }
+            ]
+          }
+        ],
+        "waitingOn": []
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:50Z",
+      "idempotencyKey": "6a4d5c9b-1e0f-4aed-8b1c-8d9e0f1a2b34",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+        "fields": {
+          "customerDueDiligence": "{\"funds\":{\"source\":\"salary\"}}"
+        }
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "PATCH",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/extra-details",
+          "meldVersion": "2023-07-19",
+          "body": {
+            "processes": [
+              {
+                "code": "customer-due-diligence",
+                "sections": {
+                  "funds": {
+                    "source": "salary"
+                  }
+                }
+              }
+            ]
+          },
+          "status": 200,
+          "response": {
+            "summaryStatus": "pending",
+            "requirements": []
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "UPHOLD:PROVIDER_EXTRA_FIELDS:PROVIDER_EXTRA_KYC",
+        "outcome": "DONE"
+      }
+    },
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:01:00Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "WAITING",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 15000,
+        "providers": [
+          {
+            "serviceProvider": "UPHOLD",
+            "status": "WAITING",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "ORDER_ROUTE",
+                "code": "ORDER_ROUTE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "currentLevel": "LEVEL_2"
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "PROVIDER_EXTRA_FIELDS",
+                "code": "PROVIDER_EXTRA_KYC",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "processStates": [
+                  {
+                    "code": "customerDueDiligence",
+                    "status": "ok",
+                    "model": "uphold-verified"
+                  },
+                  {
+                    "code": "taxDetails",
+                    "status": "ok",
+                    "model": "uphold-verified"
+                  }
+                ]
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [],
+        "waitingOn": [
+          {
+            "stepId": "UPHOLD:PROVIDER_REVIEW:PROVIDER_KYC_APPROVED",
+            "type": "PROVIDER_REVIEW",
+            "code": "PROVIDER_KYC_APPROVED",
+            "serviceProviders": [
+              "UPHOLD"
+            ],
+            "event": "CUSTOMER_KYC_STATUS_CHANGE"
+          }
+        ]
+      }
+    }
+  ]
+}

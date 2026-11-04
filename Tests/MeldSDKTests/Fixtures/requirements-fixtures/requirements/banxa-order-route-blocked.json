@@ -1,0 +1,69 @@
+{
+  "fixture": "requirements/banxa-order-route-blocked",
+  "contract": "kyc-dx-contract C5",
+  "meldVersion": "2026-11-01",
+  "description": "Banxa with everything done, for an order whose payment method the catalog does not offer: ORDER_ROUTE is BLOCKED with create's code, so eligible is false and no provider check runs.",
+  "request": {
+    "method": "GET",
+    "path": "/crypto/onramp/BANXA/requirements",
+    "query": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "paymentMethodType": "SEPA",
+      "sourceCurrencyCode": "USD",
+      "sourceAmount": "250",
+      "destinationCurrencyCode": "USDC",
+      "destinationNetworkCode": "BASE",
+      "countryCode": "US"
+    }
+  },
+  "responseHeaders": {
+    "Meld-Version": "2026-11-01"
+  },
+  "responseMembers": [
+    "serviceProvider",
+    "eligible",
+    "requirements"
+  ],
+  "absentKeys": [
+    "kycRequirements"
+  ],
+  "response": {
+    "serviceProvider": "BANXA",
+    "eligible": false,
+    "requirements": [
+      {
+        "type": "ORDER_ROUTE",
+        "code": "ORDER_ROUTE",
+        "status": "BLOCKED",
+        "timing": "PRE_ORDER",
+        "reason": "PAYMENT_METHOD_NOT_SUPPORTED"
+      },
+      {
+        "type": "VERIFICATION",
+        "code": "EMAIL",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "MELD_KYC",
+        "code": "MELD_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER",
+        "level": "LEVEL_2",
+        "currentLevel": "LEVEL_2"
+      },
+      {
+        "type": "PROVIDER_KYC_SHARE",
+        "code": "PROVIDER_KYC_SHARE",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "PROVIDER_REVIEW",
+        "code": "PROVIDER_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      }
+    ]
+  }
+}
