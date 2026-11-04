@@ -58,10 +58,10 @@ struct PaymentActionDescriptor: CustomStringConvertible {
               let parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
               parts.percentEncodedPath == url.path,
               let pointer = raw["bearerTokenPointer"] as? String,
-              let bearer = Self.resolve(pointer, in: order.raw) as? String,
-              !bearer.isEmpty, bearer.utf8.count <= 16384,
-              bearer.unicodeScalars.allSatisfy({ $0.value > 32 && $0.value < 127 }),
-              let declarations = raw["operations"] as? [[String: Any]], !declarations.isEmpty
+              let bearer = PaymentActionJSON.resolve(pointer, in: order.raw) as? String,
+              PaymentActionJSON.isBearer(bearer),
+              let declarations = raw["operations"] as? [[String: Any]], !declarations.isEmpty,
+              let operations = PaymentActionJSON.operations(declarations)
         else { throw PaymentActionError.invalidDescriptor }
         let path = url.path.components(separatedBy: "/")
         guard path.count == 8, Array(path.prefix(4)) == ["", "crypto", "order", "headless"],
@@ -69,27 +69,39 @@ struct PaymentActionDescriptor: CustomStringConvertible {
               !path[5].isEmpty, path[6] == orderID, path[7] == "actions",
               order.serviceProvider == nil || order.serviceProvider == path[5]
         else { throw PaymentActionError.invalidDescriptor }
-        var operations: [String: Bool] = [:]
-        for declaration in declarations {
-            guard let operation = declaration["operation"] as? String, !operation.isEmpty,
-                  let required = declaration["idempotencyKeyRequired"] as? NSNumber,
-                  CFGetTypeID(required) == CFBooleanGetTypeID(), operations[operation] == nil
-            else { throw PaymentActionError.invalidDescriptor }
-            operations[operation] = required.boolValue
-        }
         self.endpoint = url
         self.bearer = bearer
         self.operations = operations
     }
 
     func request(operation: String, fields: [String: Any], key: UUID?) throws -> URLRequest {
+        try ActionRequest.post(endpoint: endpoint, bearer: bearer, operations: operations, operation: operation,
+                               fields: fields, key: key)
+    }
+
+    static func baseURL(_ environment: MeldEnvironment) -> String {
+        switch environment {
+        case .sandbox: return "https://api-sb.meld.io"
+        case .qa: return "https://api-qa.meld.io"
+        case .production: return "https://api.meld.io"
+        }
+    }
+}
+
+/// The one way an action request is built: a declared operation, its idempotency rule, a bounded body.
+enum ActionRequest {
+    static let bodyLimit = 65536
+
+    static func post(endpoint: URL, bearer: String, operations: [String: Bool], operation: String,
+                     fields: [String: Any], key: UUID?) throws -> URLRequest {
         guard let required = operations[operation], required == (key != nil),
               fields["version"] == nil, fields["operation"] == nil else { throw PaymentActionError.invalidRequest }
         var body = fields
         body["version"] = 1
         body["operation"] = operation
+        guard JSONSerialization.isValidJSONObject(body) else { throw PaymentActionError.invalidRequest }
         let data = try JSONSerialization.data(withJSONObject: body)
-        guard data.count <= 65536 else { throw PaymentActionError.invalidRequest }
+        guard data.count <= bodyLimit else { throw PaymentActionError.invalidRequest }
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.httpShouldHandleCookies = false
@@ -100,28 +112,6 @@ struct PaymentActionDescriptor: CustomStringConvertible {
         request.httpBody = data
         return request
     }
-
-    static func baseURL(_ environment: MeldEnvironment) -> String {
-        switch environment {
-        case .sandbox: return "https://api-sb.meld.io"
-        case .qa: return "https://api-qa.meld.io"
-        case .production: return "https://api.meld.io"
-        }
-    }
-
-    private static func resolve(_ pointer: String, in root: [String: Any]) -> Any? {
-        guard pointer.hasPrefix("/"), pointer.utf8.count <= 1024 else { return nil }
-        var current: Any = root
-        for encoded in pointer.dropFirst().components(separatedBy: "/") {
-            guard encoded.range(of: "~(?:[^01]|$)", options: .regularExpression) == nil else { return nil }
-            let key = encoded.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~")
-            if let object = current as? [String: Any], let value = object[key] { current = value }
-            else if let array = current as? [Any], let index = Int(key), String(index) == key,
-                    index >= 0, index < array.count { current = array[index] }
-            else { return nil }
-        }
-        return current
-    }
 }
 
 protocol PaymentActionSending {
@@ -130,17 +120,14 @@ protocol PaymentActionSending {
     func finish()
 }
 
-/// Order-scoped transport. No cookies, disk cache, redirects, response diagnostics or application retries.
+/// Order-scoped transport. No application retries.
 final class PaymentActionClient: PaymentActionSending {
     let descriptor: PaymentActionDescriptor
-    private let session: URLSession
+    private let transport: ActionTransport
 
     init(descriptor: PaymentActionDescriptor, configuration: URLSessionConfiguration = .ephemeral) {
         self.descriptor = descriptor
-        configuration.urlCache = nil
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        self.session = URLSession(configuration: configuration, delegate: PaymentActionRedirectPolicy(), delegateQueue: nil)
+        self.transport = URLSessionActionTransport(configuration: configuration)
     }
 
     func send(_ operation: String, fields: [String: Any] = [:], key: UUID? = nil,
@@ -148,20 +135,18 @@ final class PaymentActionClient: PaymentActionSending {
         let request: URLRequest
         do { request = try descriptor.request(operation: operation, fields: fields, key: key) }
         catch { DispatchQueue.main.async { completion(.failure(PaymentActionError.invalidRequest)) }; return }
-        session.dataTask(with: request) { data, response, error in
-            let result: Result<[String: Any], Error>
-            if error != nil { result = .failure(PaymentActionError.transport) }
-            else if let response = response as? HTTPURLResponse {
-                if !(200..<300).contains(response.statusCode) {
-                    result = .failure(PaymentActionFailureCode.decode(data, status: response.statusCode))
-                }
-                else if let data, data.count <= 65536,
-                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                        PaymentActionJSON.integer(json["version"]) == 1 { result = .success(json) }
-                else { result = .failure(PaymentActionError.invalidResponse) }
-            } else { result = .failure(PaymentActionError.invalidResponse) }
-            DispatchQueue.main.async { completion(result) }
-        }.resume()
+        transport.post(request, responseLimit: 65536) { result in
+            switch result {
+            case .transportFailed: completion(.failure(PaymentActionError.transport))
+            case .notHTTP: completion(.failure(PaymentActionError.invalidResponse))
+            case let .response(status, body):
+                if !(200..<300).contains(status) {
+                    completion(.failure(PaymentActionFailureCode.decode(body, status: status)))
+                } else if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                          PaymentActionJSON.integer(json["version"]) == 1 { completion(.success(json)) }
+                else { completion(.failure(PaymentActionError.invalidResponse)) }
+            }
+        }
     }
 
     /// The raw response to an action the order declares, for a caller that decodes it itself (the web SDK
@@ -171,12 +156,60 @@ final class PaymentActionClient: PaymentActionSending {
         let request: URLRequest
         do { request = try descriptor.request(operation: operation, fields: fields, key: key) }
         catch { DispatchQueue.main.async { completion(nil) }; return }
-        session.dataTask(with: request) { data, response, error in
-            let result = (error == nil ? response as? HTTPURLResponse : nil).map { response in
-                (status: response.statusCode, body: data.flatMap { $0.count <= 65536 ? String(data: $0, encoding: .utf8) : nil })
-            }
+        transport.post(request, responseLimit: 65536) { result in
+            guard case let .response(status, body) = result else { completion(nil); return }
+            completion((status: status, body: body.flatMap { String(data: $0, encoding: .utf8) }))
+        }
+    }
+
+    func finish() { transport.finish() }
+}
+
+enum ActionTransportResult {
+    /// `body` is nil when the response has none or it is over the caller's limit.
+    case response(status: Int, body: Data?)
+    case transportFailed
+    case notHTTP
+}
+
+protocol ActionTransportTask: AnyObject {
+    func cancel()
+}
+
+extension URLSessionTask: ActionTransportTask {}
+
+/// One action POST. Completes on the main queue.
+protocol ActionTransport: AnyObject {
+    @discardableResult
+    func post(_ request: URLRequest, responseLimit: Int,
+              completion: @escaping (ActionTransportResult) -> Void) -> ActionTransportTask
+    func finish()
+}
+
+/// No cookies, disk cache, redirects or response diagnostics.
+final class URLSessionActionTransport: ActionTransport {
+    private let session: URLSession
+
+    init(configuration: URLSessionConfiguration = .ephemeral) {
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        self.session = URLSession(configuration: configuration, delegate: PaymentActionRedirectPolicy(), delegateQueue: nil)
+    }
+
+    @discardableResult
+    func post(_ request: URLRequest, responseLimit: Int,
+              completion: @escaping (ActionTransportResult) -> Void) -> ActionTransportTask {
+        let task = session.dataTask(with: request) { data, response, error in
+            let result: ActionTransportResult
+            if error != nil { result = .transportFailed }
+            else if let response = response as? HTTPURLResponse {
+                result = .response(status: response.statusCode, body: data.flatMap { $0.count <= responseLimit ? $0 : nil })
+            } else { result = .notHTTP }
             DispatchQueue.main.async { completion(result) }
-        }.resume()
+        }
+        task.resume()
+        return task
     }
 
     func finish() { session.finishTasksAndInvalidate() }
@@ -194,5 +227,40 @@ enum PaymentActionJSON {
     static func integer(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         return Int(exactly: number.doubleValue)
+    }
+
+    static func boolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    static func isBearer(_ token: String) -> Bool {
+        !token.isEmpty && token.utf8.count <= 16384 && token.unicodeScalars.allSatisfy { $0.value > 32 && $0.value < 127 }
+    }
+
+    /// Declared operations and whether each needs an idempotency key; nil when any declaration is malformed or repeated.
+    static func operations(_ declarations: [[String: Any]]) -> [String: Bool]? {
+        var operations: [String: Bool] = [:]
+        for declaration in declarations {
+            guard let operation = declaration["operation"] as? String, !operation.isEmpty,
+                  let required = boolean(declaration["idempotencyKeyRequired"]), operations[operation] == nil
+            else { return nil }
+            operations[operation] = required
+        }
+        return operations
+    }
+
+    static func resolve(_ pointer: String, in root: [String: Any]) -> Any? {
+        guard pointer.hasPrefix("/"), pointer.utf8.count <= 1024 else { return nil }
+        var current: Any = root
+        for encoded in pointer.dropFirst().components(separatedBy: "/") {
+            guard encoded.range(of: "~(?:[^01]|$)", options: .regularExpression) == nil else { return nil }
+            let key = encoded.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~")
+            if let object = current as? [String: Any], let value = object[key] { current = value }
+            else if let array = current as? [Any], let index = Int(key), String(index) == key,
+                    index >= 0, index < array.count { current = array[index] }
+            else { return nil }
+        }
+        return current
     }
 }
