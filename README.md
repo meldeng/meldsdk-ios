@@ -25,7 +25,7 @@ and add the **MeldSDK** library to your app target. Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.11.0"),
+    .package(url: "https://github.com/meldeng/meldsdk-ios", from: "0.12.0"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 (This is also how the React Native wrapper consumes the SDK.)
 
 ```ruby
-pod 'MeldSDK', '~> 0.11.0'
+pod 'MeldSDK', '~> 0.12.0'
 ```
 
 Then `import MeldSDK`.
