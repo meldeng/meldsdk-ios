@@ -154,6 +154,25 @@ struct OrderService {
         return data
     }
 
+    /// `POST /crypto/onramp/requirements-sessions` — the session the app hands to `Meld.ensureReady`, scoped to
+    /// this customer, the selected provider and the order the customer is about to place. nil when the account
+    /// has no requirements sessions (the flag is off outside sandbox until it is enabled per account).
+    func requirementsSession(customerId: String, serviceProvider: String, paymentMethodType: String) async throws -> Data? {
+        let body: [String: Any] = [
+            "customerId": customerId,
+            "serviceProviders": [serviceProvider],
+            "order": [
+                "paymentMethodType": paymentMethodType,
+                "sourceCurrencyCode": DemoConfig.sourceCurrency,
+                "sourceAmount": Double(DemoConfig.sourceAmount) ?? 0,
+                "destinationCurrencyCode": DemoConfig.destinationCurrency,
+                "countryCode": DemoConfig.country,
+            ],
+        ]
+        let (data, http) = try await post("/crypto/onramp/requirements-sessions", body)
+        return http.statusCode == 201 ? data : nil
+    }
+
     /// demo-only: the sandbox/QA backend may not yet surface `merchantIdentifier` on Apple Pay
     /// orders (it's added by a pending backend change). For the Simulator preview, inject a
     /// placeholder — the same id as the app's Apple Pay entitlement — when the order doesn't carry

@@ -2,8 +2,7 @@ import SwiftUI
 import MeldSDK
 
 /// The checkout screen, styled to match the web demo's card. The MeldSDK calls are marked
-/// `// SDK:` (there are only two here — `configure` and `capabilities`); the actual mount lives
-/// in Widget.swift.
+/// `// SDK:`; the requirements handlers live in Requirements.swift and the actual mount in Widget.swift.
 struct ContentView: View {
     private let orders = OrderService()
     @StateObject private var events = EventLog()
@@ -316,6 +315,16 @@ struct ContentView: View {
 
         let trimmedWallet = wallet.trimmingCharacters(in: .whitespaces)
         do {
+            // Run the provider's requirements first (terms, details, Meld KYC); create only once it is ready.
+            if let sessionJSON = try await orders.requirementsSession(
+                customerId: customer, serviceProvider: provider, paymentMethodType: method.paymentMethodType) {
+                let result = await DemoRequirements.ensureReady(try MeldRequirementsSession.from(jsonData: sessionJSON)) // SDK
+                guard result.status == .ready || result.status == .undetermined else {
+                    errorText = DemoRequirements.describe(result)
+                    return
+                }
+            }
+
             let orderJSON = try await orders.createOrder(
                 serviceProvider: provider,
                 customerId: customer,
