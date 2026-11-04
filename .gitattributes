@@ -1,0 +1,2 @@
+# Hashed byte for byte against SHA256SUMS, so every checkout keeps them LF.
+Tests/MeldSDKTests/Fixtures/requirements-fixtures/** text eol=lf

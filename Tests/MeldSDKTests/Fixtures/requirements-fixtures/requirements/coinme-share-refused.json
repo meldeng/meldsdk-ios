@@ -1,0 +1,79 @@
+{
+  "fixture": "requirements/coinme-share-refused",
+  "contract": "kyc-dx-contract C5",
+  "meldVersion": "2026-11-01",
+  "description": "Coinme refused the share until the customer's phone passes its 2FA: PROVIDER_KYC_SHARE is BLOCKED with account-domain's recorded reason and Coinme's errorCodes (kycShareFailures.COINME), so eligible is false. The code is reported as recorded; no step is derived from it.",
+  "request": {
+    "method": "GET",
+    "path": "/crypto/onramp/COINME/requirements",
+    "query": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "paymentMethodType": "CREDIT_DEBIT_CARD",
+      "sourceCurrencyCode": "USD",
+      "sourceAmount": "250",
+      "destinationCurrencyCode": "USDC",
+      "destinationNetworkCode": "BASE",
+      "countryCode": "US"
+    }
+  },
+  "responseHeaders": {
+    "Meld-Version": "2026-11-01"
+  },
+  "responseMembers": [
+    "serviceProvider",
+    "eligible",
+    "requirements"
+  ],
+  "absentKeys": [
+    "kycRequirements"
+  ],
+  "response": {
+    "serviceProvider": "COINME",
+    "eligible": false,
+    "requirements": [
+      {
+        "type": "ORDER_ROUTE",
+        "code": "ORDER_ROUTE",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "VERIFICATION",
+        "code": "EMAIL",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER"
+      },
+      {
+        "type": "MELD_KYC",
+        "code": "MELD_KYC_APPROVED",
+        "status": "SATISFIED",
+        "timing": "PRE_ORDER",
+        "level": "LEVEL_2",
+        "currentLevel": "LEVEL_2"
+      },
+      {
+        "type": "PROVIDER_KYC_SHARE",
+        "code": "PROVIDER_KYC_SHARE",
+        "status": "BLOCKED",
+        "timing": "PRE_ORDER",
+        "reason": "Coinme needs the customer's phone verified first",
+        "errorCodes": [
+          "PHONE_VERIFICATION_REQUIRED"
+        ]
+      },
+      {
+        "type": "PROVIDER_REVIEW",
+        "code": "PROVIDER_KYC_APPROVED",
+        "status": "REQUIRED",
+        "timing": "PRE_ORDER",
+        "dependsOn": [
+          "PROVIDER_KYC_SHARE"
+        ],
+        "action": {
+          "type": "WAIT",
+          "event": "CUSTOMER_KYC_STATUS_CHANGE"
+        }
+      }
+    ]
+  }
+}

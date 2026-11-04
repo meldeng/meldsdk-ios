@@ -1,0 +1,268 @@
+{
+  "fixture": "requirements-session/noah-hosted-onboarding",
+  "contract": "kyc-dx-contract C7",
+  "meldVersion": "2026-11-01",
+  "description": "Noah's hosted onboarding (virtual account, no order): the URL expires in 40 s, so the client refreshes before presenting, and refreshes once more after the page closes.",
+  "tokenIssuedAt": "2026-11-04T14:58:30Z",
+  "mint": {
+    "request": {
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "NOAH"
+      ]
+    },
+    "status": 201,
+    "response": {
+      "id": "Lw7WcZ3eRf6UyNa9BpSd5h",
+      "customerId": "W9kL817BBS7bNEwxAZaX4z",
+      "serviceProviders": [
+        "NOAH"
+      ],
+      "readyWhen": "ALL",
+      "expiresAt": "2026-11-04T15:28:30Z",
+      "token": "eyJhbGciOiJIUzI1NiJ9.fixture.requirements-session-token",
+      "requirementsActions": {
+        "version": 1,
+        "endpoint": "/crypto/onramp/requirements-sessions/Lw7WcZ3eRf6UyNa9BpSd5h/actions",
+        "bearerTokenPointer": "/token",
+        "operations": [
+          {
+            "operation": "READ",
+            "idempotencyKeyRequired": false
+          },
+          {
+            "operation": "RUN_STEP",
+            "idempotencyKeyRequired": true
+          }
+        ]
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:00:00Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "ACTION_REQUIRED",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 4000,
+        "providers": [
+          {
+            "serviceProvider": "NOAH",
+            "status": "ACTION_REQUIRED",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "currentLevel": "LEVEL_2"
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "EXTERNAL_KYC",
+                "code": "NOAH_HOSTED_ONBOARDING",
+                "status": "REQUIRED",
+                "timing": "PRE_ORDER",
+                "action": {
+                  "type": "OPEN_URL",
+                  "url": "https://onboarding.noah.test/hosted?session=fixture-1",
+                  "expiresAt": "2026-11-04T15:00:40Z",
+                  "refresh": {
+                    "method": "POST",
+                    "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+                    "body": {
+                      "targetServiceProviders": [
+                        "NOAH"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "dependsOn": [
+                  "NOAH_HOSTED_ONBOARDING"
+                ],
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [
+          {
+            "stepId": "NOAH:EXTERNAL_KYC:NOAH_HOSTED_ONBOARDING",
+            "kind": "OPEN_URL",
+            "type": "EXTERNAL_KYC",
+            "code": "NOAH_HOSTED_ONBOARDING",
+            "serviceProviders": [
+              "NOAH"
+            ],
+            "url": "https://onboarding.noah.test/hosted?session=fixture-1",
+            "expiresAt": "2026-11-04T15:00:40Z"
+          }
+        ],
+        "waitingOn": []
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:00:05Z",
+      "idempotencyKey": "9f7c8b2a-4d3e-4f76-9a8b-1c2d3e4f5a67",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "NOAH:EXTERNAL_KYC:NOAH_HOSTED_ONBOARDING",
+        "refresh": true
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "POST",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+          "meldVersion": "2026-11-01",
+          "body": {
+            "targetServiceProviders": [
+              "NOAH"
+            ]
+          },
+          "status": 200,
+          "response": {
+            "customerId": "W9kL817BBS7bNEwxAZaX4z",
+            "serviceProvider": "SUMSUB",
+            "status": "APPROVED",
+            "url": null,
+            "level": "LEVEL_2",
+            "approvedLevel": "LEVEL_2"
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "NOAH:EXTERNAL_KYC:NOAH_HOSTED_ONBOARDING",
+        "outcome": "OPEN_URL",
+        "url": "https://onboarding.noah.test/hosted?session=fixture-2",
+        "expiresAt": "2026-11-04T16:00:05Z"
+      }
+    },
+    {
+      "operation": "RUN_STEP",
+      "at": "2026-11-04T15:06:00Z",
+      "idempotencyKey": "0a8d9c3b-5e4f-4a87-8b9c-2d3e4f5a6b78",
+      "request": {
+        "version": 1,
+        "operation": "RUN_STEP",
+        "stepId": "NOAH:EXTERNAL_KYC:NOAH_HOSTED_ONBOARDING",
+        "refresh": true
+      },
+      "upstream": [
+        {
+          "service": "account",
+          "method": "POST",
+          "path": "/accounts/customers/W9kL817BBS7bNEwxAZaX4z/kyc/initiate",
+          "meldVersion": "2026-11-01",
+          "body": {
+            "targetServiceProviders": [
+              "NOAH"
+            ]
+          },
+          "status": 200,
+          "response": {
+            "customerId": "W9kL817BBS7bNEwxAZaX4z",
+            "serviceProvider": "SUMSUB",
+            "status": "APPROVED",
+            "url": null,
+            "level": "LEVEL_2",
+            "approvedLevel": "LEVEL_2"
+          }
+        }
+      ],
+      "status": 200,
+      "response": {
+        "version": 1,
+        "stepId": "NOAH:EXTERNAL_KYC:NOAH_HOSTED_ONBOARDING",
+        "outcome": "DONE"
+      }
+    },
+    {
+      "operation": "READ",
+      "at": "2026-11-04T15:06:01Z",
+      "request": {
+        "version": 1,
+        "operation": "READ"
+      },
+      "status": 200,
+      "response": {
+        "version": 1,
+        "status": "WAITING",
+        "expiresAt": "2026-11-04T15:28:30Z",
+        "pollAfterMs": 15000,
+        "providers": [
+          {
+            "serviceProvider": "NOAH",
+            "status": "WAITING",
+            "eligible": false,
+            "requirements": [
+              {
+                "type": "MELD_KYC",
+                "code": "MELD_KYC_APPROVED",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER",
+                "level": "LEVEL_2",
+                "currentLevel": "LEVEL_2"
+              },
+              {
+                "type": "PROVIDER_KYC_SHARE",
+                "code": "PROVIDER_KYC_SHARE",
+                "status": "SATISFIED",
+                "timing": "PRE_ORDER"
+              },
+              {
+                "type": "PROVIDER_REVIEW",
+                "code": "PROVIDER_KYC_APPROVED",
+                "status": "PENDING",
+                "timing": "PRE_ORDER",
+                "action": {
+                  "type": "WAIT",
+                  "event": "CUSTOMER_KYC_STATUS_CHANGE"
+                }
+              }
+            ]
+          }
+        ],
+        "next": [],
+        "waitingOn": [
+          {
+            "stepId": "NOAH:PROVIDER_REVIEW:PROVIDER_KYC_APPROVED",
+            "type": "PROVIDER_REVIEW",
+            "code": "PROVIDER_KYC_APPROVED",
+            "serviceProviders": [
+              "NOAH"
+            ],
+            "event": "CUSTOMER_KYC_STATUS_CHANGE"
+          }
+        ]
+      }
+    }
+  ]
+}

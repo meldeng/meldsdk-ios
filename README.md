@@ -88,7 +88,8 @@ else { return } // Missing, malformed or unimplemented protocol: select a suppor
 
 This advisory check uses the same installed adapter registry as order dispatch. It does not
 establish route eligibility, Apple Pay availability, legal acceptance or authorization to pay.
-Keep checking requirements and [device readiness](#readiness-before-you-create-an-order), then validate the actual order with
+Run the customer's [requirements](#customer-requirements-before-you-create-an-order) and check
+[device readiness](#readiness-before-you-create-an-order), then validate the actual order with
 `Meld.capabilities(for: order)` before mounting it. `embeddable` only indicates whether a visible
 host is needed; native sheets can be supported with `embeddable == false`. Never invent a
 presentation from a provider name or fabricate an order for preflight.
@@ -173,6 +174,107 @@ available from 0.10.0.
 
 `Meld.canPresentApplePay()` was removed in 0.10.0. `Meld.paymentMethodReadiness("APPLE_PAY")` makes the
 same device-and-Wallet check, and the row's readiness knows the provider.
+
+## Customer requirements before you create an order
+
+A provider may need things from the customer before it takes an order: accepted terms, an email or name,
+Meld KYC, a provider's own hosted onboarding. `Meld.ensureReady` runs that checklist on the device, for
+any provider, with no API key in the app.
+
+**Backend** — mint a session for the customer and the providers you will offer (API key, server side):
+
+```http
+POST /crypto/onramp/requirements-sessions
+Authorization: BASIC <API key>
+
+{"customerId": "W9kL817BBS7bNEwxAZaX4z",
+ "serviceProviders": ["BANXA", "UPHOLD"],
+ "order": {"paymentMethodType": "CREDIT_DEBIT_CARD", "sourceCurrencyCode": "USD", "sourceAmount": 250,
+           "destinationCurrencyCode": "USDC", "destinationNetworkCode": "BASE", "countryCode": "US"},
+ "readyWhen": "ALL"}
+```
+
+The 201 response is the session. Pass it to the app unchanged; it expires after 30 minutes.
+
+**App** — run it before you create the order:
+
+```swift
+let session = try MeldRequirementsSession.from(jsonData: sessionJSON)
+
+let handle = Meld.ensureReady(session: session, handlers: MeldReadyHandlers(
+    collect: { request, done in
+        // request.fields lists the keys to collect (e.g. "email"); request.fieldErrors says why the last answer was refused.
+        showForm(request.fields, errors: request.fieldErrors) { values in done(values) }   // nil: your backend handled it
+    },
+    confirmAgreement: { agreement, done in
+        showTerms(agreement.url, provider: agreement.serviceProvider) { accepted in done(accepted) }
+    }
+), presenter: self) { result in
+    switch result.status {
+    case .ready, .undetermined: createOrder()
+    case .pending: showWaiting()                      // a review is running; try again later
+    case .actionRequired: show(result.pending ?? [])   // then call ensureReady again
+    case .blocked: offerAnotherProvider()
+    case .expired: mintAnotherSession()
+    case .cancelled, .failed: showError(result.error)
+    }
+}
+// handle.refresh() ends a wait and reads again now (for example when your backend gets CUSTOMER_KYC_STATUS_CHANGE);
+// handle.cancel() stops.
+```
+
+The SDK reads the checklist, runs each step this device can run, and waits on reviews, polling at the interval
+Meld asks for (kept between 1 and 60 seconds). It never accepts terms on its own and never renders a form:
+`collect` and `confirmAgreement` are yours, and a step that needs one you did not pass is reported in `pending`
+instead. Hosted pages (Meld KYC, a provider's onboarding or terms, a provider's hosted form) open behind a
+Continue prompt in `SFSafariViewController`, anchored on `presenter` (default: the key window's top view
+controller). Cancel on the prompt ends with `ACTION_REQUIRED`; the page is dismissed for you once Meld reports
+the step done. When Meld offered the page as a link, such as a provider's onboarding or terms, a link that
+expires within a minute is refreshed before it opens, also when it aged while the prompt was up (the new link
+opens without asking again). When the customer closes such a page, or it fails to load, the SDK refreshes the
+step once before it reads again (a 409 there only means the step already moved on). A 401 on that refresh asks
+`renewSession` and sends the refresh again on the new session, without opening the page again; a second 401
+ends `EXPIRED`. Pages that open when the SDK runs a step, such as Meld KYC or a provider's hosted form, and a
+page the SDK dismissed itself, are not refreshed: the SDK only reads again. Either way, that read decides whether
+the step is done. If the step is still offered and nothing else changed (a new link does not count), the SDK
+waits up to 30 seconds for Meld to report it done, then ends `ACTION_REQUIRED` with that step; it does not
+prompt, open the page or call `presentUrl` again. When Meld cannot tell whether a step ran (503
+`OUTCOME_UNKNOWN`), the SDK reads again: a step no longer offered is done, a link refresh is sent again (at most
+three times), and any other step still offered ends `ACTION_REQUIRED` with that step, because sending it again
+could repeat it (a second code, a second acceptance). Pass `presentUrl` to show pages yourself; call its completion
+when the page closes. Pass `renewSession` to mint a new session when Meld refuses one with 401; it is asked at
+most once until Meld answers again and at most three times per run, and the next 401 ends `EXPIRED`.
+
+The session's endpoint is relative: the SDK sends it to the environment you passed to
+`Meld.configure(environment:)` and cannot tell a session minted in another environment. Meld refuses such a
+session with 401, so it ends `EXPIRED` (after one `renewSession`). Mint sessions in the environment the app is
+configured for.
+
+| `result.status` | Do |
+|---|---|
+| `READY` | Create the order. |
+| `UNDETERMINED` | Create the order: Meld could not tell, and order creation stays the authoritative check. |
+| `PENDING` | A review is running. Call `ensureReady` again later, or on `CUSTOMER_KYC_STATUS_CHANGE`. |
+| `ACTION_REQUIRED` | Show `result.pending`, then call `ensureReady` again. An empty `pending` means no step can run on the device; `result.providers[].open` names what is left for your backend or the provider. |
+| `BLOCKED` | The provider refuses this customer or order. Offer another provider. |
+| `CANCELLED` / `EXPIRED` / `FAILED` | You cancelled; Meld refused the session with 401 (expired, or minted in another environment) and no `renewSession` supplied one it accepts; or `result.error` says what failed (`http` with `status` and `code`, `transport` or `protocol`). |
+
+`result.providers` lists each provider's status, `eligible` and the requirements still open.
+Each open requirement carries Meld's `reason` when there is one and, on a share the provider refused, its
+`errorCodes` (such as Coinme's `PHONE_VERIFICATION_REQUIRED`; nil when there are none). The SDK does not act
+on them.
+`result.continuation` lists the steps a provider declares to run inside `Meld.mount(order)` after you create
+the order; today only Stripe's identity check. `READY` does not mean there are none. Mercuryo's widget and
+Coinbase's payment page are not listed; they open when the order is mounted. Every handler and `onResult` run
+on the main queue, and nothing is delivered after `onResult`. The session token is never printed or stored.
+
+**A hosted verification on a refused order.** When order creation is refused with a hosted verification URL
+(for example `KYC_NOT_COMPLETED` with `serviceProviderDetails.hostedVerificationUrl`), show it with
+`Meld.openHostedVerification(url: url, presenter: self) { createOrderAgain() }` and create the order again
+with a new `externalOrderId`. It uses the same Continue prompt; `onClose` also runs, without presenting, when
+the URL is not https.
+
+Requirements sessions are available from 0.12.0. Ask Meld to enable them for your account.
 
 ## Events
 
@@ -547,6 +649,12 @@ the user's identity, and link Coinme's privacy policy from your app's privacy po
   caller's executor, or with a `completion:` delivered on the main queue) — whether this device can
   pay with a quote row's method before you create the order: `.ready`, `.unavailable(code:reason:)` or
   `.unknown(reason:)`. See [Readiness](#readiness-before-you-create-an-order).
+- `Meld.ensureReady(session:handlers:options:presenter:onResult:)` → `MeldReadyHandle` (`refresh()`,
+  `cancel()`) — runs a requirements session before you create the order. `MeldReadyOptions.waitTimeoutMs`
+  (default 600000) bounds the wait on reviews. See [Customer requirements](#customer-requirements-before-you-create-an-order).
+- `Meld.openHostedVerification(url:presenter:onClose:)` — shows a hosted verification URL a refused order
+  carried, behind the Continue prompt.
+- `MeldRequirementsSession.from(jsonData:)` / `.from(jsonString:)` — decode the session your backend minted.
 - `MeldApplePayRequest` — amount/currency, display label and fallback email; wallet/IP fields
   are required only for historical orders using the legacy endpoint.
 - `MeldMountError` — what `mount` throws for an order it cannot start: `.unsupported`,

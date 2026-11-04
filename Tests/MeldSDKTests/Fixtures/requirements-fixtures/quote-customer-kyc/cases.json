@@ -1,0 +1,558 @@
+{
+  "fixture": "quote-customer-kyc/cases",
+  "contract": "kyc-dx-contract C6",
+  "description": "customerKyc on HEADLESS purchase quote rows. catalog.kycLevel null means the catalog read failed. customerKyc null means the member is absent.",
+  "cases": [
+    {
+      "name": "banxa-level-one-customer",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_1",
+        "status": "REQUIRED",
+        "reachable": false
+      }
+    },
+    {
+      "name": "banxa-provider-already-approved",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": {
+        "status": "APPROVED"
+      },
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_1",
+        "status": "SATISFIED",
+        "reachable": true
+      }
+    },
+    {
+      "name": "mercuryo-approval-without-level",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "MERCURYO"
+      },
+      "catalog": {
+        "kycMode": "SYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": null
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_2",
+        "status": "SATISFIED",
+        "reachable": true
+      }
+    },
+    {
+      "name": "stripe-level-one-approved",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "STRIPE"
+      },
+      "catalog": {
+        "kycMode": "PROVIDER_MANAGED",
+        "kycLevel": "LEVEL_1"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_1",
+        "approvedLevel": "LEVEL_1",
+        "status": "SATISFIED",
+        "reachable": true
+      }
+    },
+    {
+      "name": "coinbase-no-meld-kyc",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "COINBASEPAY"
+      },
+      "catalog": {
+        "kycMode": "PROVIDER_MANAGED",
+        "kycLevel": "LEVEL_1"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": null,
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_1",
+        "status": "UNKNOWN"
+      }
+    },
+    {
+      "name": "stripe-level-one-switch-off",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "STRIPE"
+      },
+      "catalog": {
+        "kycMode": "PROVIDER_MANAGED",
+        "kycLevel": "LEVEL_1"
+      },
+      "account": {
+        "kycLevel1Enabled": false
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": null,
+      "providerRecord": null,
+      "customerKyc": {
+        "reachable": true
+      }
+    },
+    {
+      "name": "banxa-step-up-in-review",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "PENDING",
+        "approvedLevel": "LEVEL_1",
+        "reviewStatus": "pending"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_1",
+        "status": "PENDING",
+        "reachable": false
+      }
+    },
+    {
+      "name": "banxa-step-up-not-submitted",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "PENDING",
+        "approvedLevel": "LEVEL_1",
+        "reviewStatus": "init"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_1",
+        "status": "REQUIRED",
+        "reachable": false
+      }
+    },
+    {
+      "name": "stripe-while-a-step-up-is-in-review",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "STRIPE"
+      },
+      "catalog": {
+        "kycMode": "PROVIDER_MANAGED",
+        "kycLevel": "LEVEL_1"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "PENDING",
+        "approvedLevel": "LEVEL_1",
+        "reviewStatus": "pending"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_1",
+        "approvedLevel": "LEVEL_1",
+        "status": "SATISFIED",
+        "reachable": true
+      }
+    },
+    {
+      "name": "banxa-final-rejection",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "REJECTED",
+        "approvedLevel": null,
+        "rejection": "FINAL"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "status": "BLOCKED",
+        "reachable": false
+      }
+    },
+    {
+      "name": "banxa-retryable-rejection",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "REJECTED",
+        "approvedLevel": null,
+        "rejection": "RETRY"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "status": "REQUIRED",
+        "reachable": false
+      }
+    },
+    {
+      "name": "catalog-level-unreadable",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": null
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_2"
+      },
+      "providerRecord": null,
+      "customerKyc": {
+        "requiredLevel": "LEVEL_2",
+        "approvedLevel": "LEVEL_2",
+        "status": "SATISFIED",
+        "reachable": true
+      }
+    },
+    {
+      "name": "provider-managed-level-none",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "YELLOWCARD"
+      },
+      "catalog": {
+        "kycMode": "PROVIDER_MANAGED",
+        "kycLevel": "NONE"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": null,
+      "providerRecord": null,
+      "customerKyc": {
+        "reachable": true
+      }
+    },
+    {
+      "name": "no-customer-resolved",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": false,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": null,
+      "providerRecord": null,
+      "customerKyc": null
+    },
+    {
+      "name": "widget-row",
+      "row": {
+        "integrationMode": "WIDGET",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": null,
+      "customerKyc": null
+    },
+    {
+      "name": "sell-row",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_SELL",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": null,
+      "customerKyc": null
+    },
+    {
+      "name": "caller-without-payment-charge",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": false
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": true
+      },
+      "sumsub": {
+        "status": "APPROVED",
+        "approvedLevel": "LEVEL_1"
+      },
+      "providerRecord": null,
+      "customerKyc": null
+    },
+    {
+      "name": "account-read-failed",
+      "row": {
+        "integrationMode": "HEADLESS",
+        "transactionType": "CRYPTO_PURCHASE",
+        "serviceProvider": "BANXA"
+      },
+      "catalog": {
+        "kycMode": "ASYNC",
+        "kycLevel": "LEVEL_2"
+      },
+      "account": {
+        "kycLevel1Enabled": true
+      },
+      "caller": {
+        "paymentCharge": true
+      },
+      "customer": {
+        "resolved": true,
+        "serviceProviderCustomersReadable": false
+      },
+      "sumsub": null,
+      "providerRecord": null,
+      "customerKyc": null
+    }
+  ]
+}
