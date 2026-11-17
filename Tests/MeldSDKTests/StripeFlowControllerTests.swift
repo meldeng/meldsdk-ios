@@ -117,6 +117,58 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testAFirstRejectedStatusStillSubmitsThePrefillWithoutAForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: FlowHarness.allIdentityFields),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.idNumber, "601230102")
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertEqual(attached.birthYear, 1990); XCTAssertNotNil(attached.address)
+        await h.flow.close()
+    }
+
+    func testARejectionAfterAFirstRejectedPrefillFallsBackToTheFullForm() async throws {
+        let h = try FlowHarness()
+        let missing = FlowHarness.allIdentityFields
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: missing),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [[]], "after a rejection the customer sees every field")
+        XCTAssertEqual(h.driver.attached.map(\.idNumber), ["601230102", nil], "only the form's values go after a rejection")
+        await h.flow.close()
+    }
+
+    func testAFirstRejectedL0AnswerIsCoveredByThePrefillWithoutSendingL1Data() async throws {
+        let h = try FlowHarness()
+        let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: l0),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertEqual(attached.lastName, "Lovelace"); XCTAssertNotNil(attached.address)
+        XCTAssertNil(attached.birthYear); XCTAssertNil(attached.idNumber)
+        await h.flow.close()
+    }
+
+    func testARejectionWithNothingMissingNeverSendsThePrefill() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: []),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [[]])
+        XCTAssertEqual(h.driver.attached.map(\.idNumber), [nil], "Stripe already holds the data it rejected; only the form's values go")
+        await h.flow.close()
+    }
+
     func testFullyCoveredIdentityIsSubmittedWithoutAForm() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
