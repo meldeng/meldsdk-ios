@@ -225,7 +225,9 @@ final class StripeFlowController {
                 verifiedTier = result.highestVerifiedTier
                 return true
             case ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"):
-                let input = try await identity(fields: result.missingFields, prefilled: result.status == "NOT_STARTED")
+                // REJECTED with fields still missing means Stripe holds none of them yet (a new Link customer), not a refusal.
+                let prefilled = result.status == "NOT_STARTED" || (submittedPrefill.isEmpty && !result.missingFields.isEmpty)
+                let input = try await identity(fields: result.missingFields, prefilled: prefilled)
                 try await sdk { try await $0.attachIdentity(input) }
             case ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
                 let presenter = try await forms.handOff()
