@@ -107,11 +107,16 @@ final class StripeSdkRuntimeTests: XCTestCase {
         await next.close()
     }
 
-    func testProviderErrorsNeverEscapeAsDiagnostics() async throws {
+    func testProviderErrorsKeepOnlyTheirDomainCodeAndStripeCode() async throws {
         let driver = FakeStripeSdk()
         driver.lookup = { throw NSError(domain: "private-sentinel", code: 1, userInfo: ["email": "private@example.com"]) }
         let runtime = try await StripeSdkRuntime.open(ownership: StripeSdkOwnership()) { driver }
-        await assertError(.unavailable) { _ = try await runtime.perform { try await $0.hasAccount(email: "synthetic@example.com") } }
+        await assertError(.provider("private-sentinel #1")) { _ = try await runtime.perform { try await $0.hasAccount(email: "synthetic@example.com") } }
+        driver.lookup = { throw NSError(domain: "com.stripe.lib", code: 50, userInfo: [
+            "com.stripe.lib:StripeErrorCodeKey": "crypto_onramp_invalid_parameter", "com.stripe.lib:ErrorMessageKey": "private@example.com"]) }
+        await assertError(.provider("com.stripe.lib #50 crypto_onramp_invalid_parameter")) {
+            _ = try await runtime.perform { try await $0.hasAccount(email: "synthetic@example.com") }
+        }
         await runtime.close()
     }
 

@@ -68,8 +68,14 @@ final class StripeSdkRuntime {
         } catch {
             running = false
             if !active || Task.isCancelled { await close(); throw StripeNativeError.cancelled }
-            throw error as? StripeNativeError ?? StripeNativeError.unavailable
+            throw error as? StripeNativeError ?? StripeNativeError.provider(Self.diagnostic(error))
         }
+    }
+
+    private static func diagnostic(_ error: Error) -> String {
+        let raw = error as NSError
+        let code = (raw.userInfo["com.stripe.lib:StripeErrorCodeKey"] as? String).flatMap { StripeNativeValue.text($0, limit: 64) }
+        return code.map { "\(raw.domain) #\(raw.code) \($0)" } ?? "\(raw.domain) #\(raw.code)"
     }
 
     func checkout(session: String, from presenter: UIViewController,
