@@ -56,8 +56,10 @@ struct StripeActionResponse: CustomStringConvertible {
             else { throw StripeNativeError.invalidResponse }
             missingFields = fields
             highestVerifiedTier = customer["highestVerifiedTier"] as? String
-            tierStatuses = Dictionary((customer["tiers"] as? [[String: Any]] ?? []).compactMap { tier in
-                (tier["tier"] as? String).flatMap { name in (tier["status"] as? String).map { (name, $0) } }
+            tierStatuses = Dictionary((customer["tiers"] as? [Any] ?? []).compactMap { entry -> (String, String)? in
+                guard let tier = entry as? [String: Any], let name = tier["tier"] as? String,
+                      let status = tier["status"] as? String else { return nil }
+                return (name, status)
             }, uniquingKeysWith: { first, _ in first })
             hasCustomer = true
         } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; hasCustomer = false }

@@ -19,6 +19,13 @@ final class StripeActionResponseTests: XCTestCase {
             .validateCustomerAction(requiresDetails: false))
     }
 
+    func testAnUnreadableTierEntryKeepsTheOtherTierStatuses() throws {
+        let tiers: [Any] = [NSNull(), ["tier": "L0", "status": "REJECTED"], ["tier": 1, "status": "VERIFIED"], ["tier": "L1", "status": "NOT_STARTED"]]
+        let response = try StripeActionResponse(["version": 1, "status": "REJECTED", "nextStep": "SDK_COLLECT_KYC",
+                                                 "customer": ["missingFields": [], "tiers": tiers]])
+        XCTAssertEqual(response.tierStatuses, ["L0": "REJECTED", "L1": "NOT_STARTED"])
+    }
+
     func testSubmissionReadCarriesAWellFormedPrefill() throws {
         let read = try decode("NOT_STARTED", "NONE", sdk: ["authenticationState": "BOOTSTRAP", "prefill": [
             "email": "buyer@example.test", "phone": "+14155550123", "fullName": "Ada Lovelace",
