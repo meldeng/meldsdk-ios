@@ -234,10 +234,23 @@ final class StripeFlowController {
         while reads < 12 {
             let result = try await action("READ_CUSTOMER_STATUS")
             try result.validateCustomerAction(requiresDetails: true)
+            // Stripe's answer to a rejected L0 is the L1 step-up (DOB and ID number), not the L0 fields again.
+            let l0Rejected = result.tierStatuses["L0"] == "REJECTED" && (result.tierStatuses["L1"] ?? "NOT_STARTED") == "NOT_STARTED"
+            let stepUp = l0Rejected && !attachedKeys.contains("ID_NUMBER") && !submittedPrefill.contains("ID_NUMBER")
+                && prefill?.identity?.idNumber != nil && prefill?.identity?.birthYear != nil
             switch (result.status, result.next) {
             case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"):
                 verifiedTier = result.highestVerifiedTier
                 return true
+            case ("REJECTED", "SDK_COLLECT_KYC") where l0Rejected && attachedKeys.contains("ID_NUMBER"):
+                guard waits < Self.attachWaitReads else { return false }
+                waits += 1
+                forms.showProgress("Checking your verification")
+                try await pause(); try check()
+                continue
+            case ("REJECTED", "SDK_COLLECT_KYC") where stepUp:
+                try await attach(try await identity(fields: ["DATE_OF_BIRTH", "ID_NUMBER"], prefilled: true))
+                waits = 0
             // Stripe verifies an attach asynchronously and keeps answering NOT_STARTED for data it already holds.
             case ("NOT_STARTED", "SDK_COLLECT_KYC") where Set(result.missingFields.map(Self.prefillKey)).isSubset(of: attachedKeys):
                 guard waits < Self.attachWaitReads else { return false }

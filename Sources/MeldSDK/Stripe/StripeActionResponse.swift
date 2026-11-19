@@ -12,6 +12,8 @@ struct StripeActionResponse: CustomStringConvertible {
     private let expiresAt: Date?
     let missingFields: [String]
     let highestVerifiedTier: String?
+    /// Each tier's status ("L0" → "REJECTED"). Optional detail: an unreadable entry is left out, never rejected.
+    let tierStatuses: [String: String]
     let prefill: StripePrefill?
     private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
@@ -54,8 +56,11 @@ struct StripeActionResponse: CustomStringConvertible {
             else { throw StripeNativeError.invalidResponse }
             missingFields = fields
             highestVerifiedTier = customer["highestVerifiedTier"] as? String
+            tierStatuses = Dictionary((customer["tiers"] as? [[String: Any]] ?? []).compactMap { tier in
+                (tier["tier"] as? String).flatMap { name in (tier["status"] as? String).map { (name, $0) } }
+            }, uniquingKeysWith: { first, _ in first })
             hasCustomer = true
-        } else { missingFields = []; highestVerifiedTier = nil; hasCustomer = false }
+        } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; hasCustomer = false }
         if next == "SDK_REGISTER_CUSTOMER", value["sdk"] != nil {
             throw StripeNativeError.invalidResponse
         }

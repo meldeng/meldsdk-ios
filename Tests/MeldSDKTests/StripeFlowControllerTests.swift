@@ -206,6 +206,42 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testARejectedL0StepsUpWithThePrefilledDobAndSsnWithoutAForm() async throws {
+        let h = try FlowHarness()
+        let rejectedL0 = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "NOT_STARTED"])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [rejectedL0, rejectedL0, FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.driver.attached.count, 1, "the step-up goes once, then the flow waits for Stripe")
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.idNumber, "601230102"); XCTAssertEqual(attached.birthYear, 1990)
+        XCTAssertNil(attached.firstName); XCTAssertNil(attached.address)
+        await h.flow.close()
+    }
+
+    func testARejectedL1FallsBackToTheFullForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [[]])
+        XCTAssertEqual(h.driver.attached.map(\.idNumber), [nil])
+        await h.flow.close()
+    }
+
+    func testARejectedL0WithoutAPrefilledSsnStillAsksTheForm() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "NOT_STARTED"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        _ = try await h.flow.run()
+        XCTAssertEqual(h.forms.identityRequests, [[]])
+        await h.flow.close()
+    }
+
     func testFullyCoveredIdentityIsSubmittedWithoutAForm() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
@@ -1309,8 +1345,9 @@ private final class FlowHarness {
         .success(["version": 1, "status": "READY", "nextStep": "REFRESH_QUOTE", "sdk": ["authenticationState": "RESTORE", "sessionHandle": "cos_synthetic"]])
     }
     static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = [],
-                         tier: String? = "L1") -> Result<[String: Any], Error> {
-        var customer: [String: Any] = ["missingFields": missing, "tiers": []]
+                         tier: String? = "L1", tiers: [String: String] = [:]) -> Result<[String: Any], Error> {
+        var customer: [String: Any] = ["missingFields": missing,
+                                       "tiers": tiers.sorted { $0.key < $1.key }.map { ["tier": $0.key, "status": $0.value, "errors": []] }]
         customer["highestVerifiedTier"] = tier
         return .success(["version": 1, "status": status, "nextStep": next, "customer": customer])
     }
