@@ -221,6 +221,22 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testARejectedL0WithItsFieldsStillMissingStepsUpWithTheWholeLevel1Prefill() async throws {
+        let h = try FlowHarness()
+        let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: l0, tiers: ["L0": "REJECTED", "L1": "NOT_STARTED"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.driver.attached.count, 1, "one L1 submission carries the missing L0 fields with DOB and ID")
+        let attached = try XCTUnwrap(h.driver.attached.first)
+        XCTAssertEqual(attached.firstName, "Ada"); XCTAssertEqual(attached.lastName, "Lovelace"); XCTAssertNotNil(attached.address)
+        XCTAssertEqual(attached.birthYear, 1990); XCTAssertEqual(attached.idNumber, "601230102")
+        await h.flow.close()
+    }
+
     func testARejectedL1FallsBackToTheFullForm() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +

@@ -249,7 +249,11 @@ final class StripeFlowController {
                 try await pause(); try check()
                 continue
             case ("REJECTED", "SDK_COLLECT_KYC") where stepUp:
-                try await attach(try await identity(fields: ["DATE_OF_BIRTH", "ID_NUMBER"], prefilled: true))
+                // L1 is the L0 fields plus DOB and ID number, so an L0 field Stripe still lacks goes with them.
+                let unsent = result.missingFields.filter {
+                    !attachedKeys.contains(Self.prefillKey($0)) && $0 != "DATE_OF_BIRTH" && $0 != "ID_NUMBER"
+                }
+                try await attach(try await identity(fields: unsent + ["DATE_OF_BIRTH", "ID_NUMBER"], prefilled: true))
                 waits = 0
             // Stripe verifies an attach asynchronously and keeps answering NOT_STARTED for data it already holds.
             case ("NOT_STARTED", "SDK_COLLECT_KYC") where Set(result.missingFields.map(Self.prefillKey)).isSubset(of: attachedKeys):
