@@ -169,6 +169,43 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testAnAttachedPrefillWaitsOutStripesNotStartedWithoutAFormOrASecondAttach() async throws {
+        let h = try FlowHarness()
+        let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            Array(repeating: FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: l0), count: 3) +
+            [FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.driver.attached.count, 1, "fields Stripe already accepted are never sent again")
+        await h.flow.close()
+    }
+
+    func testNotStartedWithNothingMissingWaitsInsteadOfAskingEveryField() async throws {
+        let h = try FlowHarness()
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: []),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertTrue(h.driver.attached.isEmpty, "no L1 data goes to a customer whose tier only awaits Stripe")
+        await h.flow.close()
+    }
+
+    func testStripeStuckAtNotStartedAfterTheAttachEndsAsVerificationPending() async throws {
+        let h = try FlowHarness()
+        let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            Array(repeating: FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: l0), count: 17)
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationPending)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.driver.attached.count, 1)
+        await h.flow.close()
+    }
+
     func testFullyCoveredIdentityIsSubmittedWithoutAForm() async throws {
         let h = try FlowHarness()
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefill)] + Array(FlowHarness.bootstrap.dropFirst()) +
@@ -264,7 +301,7 @@ final class StripeFlowControllerTests: XCTestCase {
     func testKycCollectionDocumentVerificationAndAddressConfirmationPrecedePayment() async throws {
         let h = try FlowHarness()
         h.driver.updateAddress = true
-        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC"),
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer("NOT_STARTED", next: "SDK_COLLECT_KYC", missing: FlowHarness.allIdentityFields),
             FlowHarness.customer("PENDING", next: "RETRY"), FlowHarness.customer("REJECTED", next: "SDK_VERIFY_IDENTITY"),
             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
         let outcome = try await h.flow.run()

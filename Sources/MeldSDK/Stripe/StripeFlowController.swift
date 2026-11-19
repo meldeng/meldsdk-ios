@@ -50,6 +50,7 @@ final class StripeFlowController {
     private var session: String?
     private var prefill: StripePrefill?
     private var submittedPrefill: Set<String> = []
+    private var attachedKeys: Set<String> = []
     private var verifiedTier: String?
     private var started = false
     private var refusedBeforePayment = false
@@ -213,22 +214,43 @@ final class StripeFlowController {
 
     private static func prefillKey(_ field: String) -> String { field.hasPrefix("ADDRESS_") ? "ADDRESS" : field }
 
+    /// About 30 s at the 2 s pause, inside Stripe's documented polling window for a submitted tier.
+    private static let attachWaitReads = 15
+
+    private func attach(_ input: StripeIdentityInput) async throws {
+        try await sdk { try await $0.attachIdentity(input) }
+        if input.firstName != nil { attachedKeys.insert("FIRST_NAME") }
+        if input.lastName != nil { attachedKeys.insert("LAST_NAME") }
+        if input.birthYear != nil { attachedKeys.insert("DATE_OF_BIRTH") }
+        if input.idNumber != nil { attachedKeys.insert("ID_NUMBER") }
+        if input.address != nil { attachedKeys.insert("ADDRESS") }
+    }
+
     private static let identityFields = ["FIRST_NAME", "LAST_NAME", "DATE_OF_BIRTH", "ID_NUMBER", "ADDRESS_LINE_1",
                                          "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
 
     private func verifyCustomer() async throws -> Bool {
-        for _ in 0..<12 {
+        var reads = 0, waits = 0
+        while reads < 12 {
             let result = try await action("READ_CUSTOMER_STATUS")
             try result.validateCustomerAction(requiresDetails: true)
             switch (result.status, result.next) {
             case ("VERIFIED", "CREATE_PAYMENT_SESSION"), ("VERIFIED", "REFRESH_QUOTE"), ("VERIFIED", "NONE"):
                 verifiedTier = result.highestVerifiedTier
                 return true
+            // Stripe verifies an attach asynchronously and keeps answering NOT_STARTED for data it already holds.
+            case ("NOT_STARTED", "SDK_COLLECT_KYC") where Set(result.missingFields.map(Self.prefillKey)).isSubset(of: attachedKeys):
+                guard waits < Self.attachWaitReads else { return false }
+                waits += 1
+                forms.showProgress("Checking your verification")
+                try await pause(); try check()
+                continue
             case ("NOT_STARTED", "SDK_COLLECT_KYC"), ("REJECTED", "SDK_COLLECT_KYC"):
                 // REJECTED with fields still missing means Stripe holds none of them yet (a new Link customer), not a refusal.
                 let prefilled = result.status == "NOT_STARTED" || (submittedPrefill.isEmpty && !result.missingFields.isEmpty)
                 let input = try await identity(fields: result.missingFields, prefilled: prefilled)
-                try await sdk { try await $0.attachIdentity(input) }
+                try await attach(input)
+                waits = 0
             case ("NOT_STARTED", "SDK_VERIFY_IDENTITY"), ("REJECTED", "SDK_VERIFY_IDENTITY"):
                 let presenter = try await forms.handOff()
                 try await sdk { try await $0.verifyIdentity(from: presenter) }
@@ -237,6 +259,7 @@ final class StripeFlowController {
                 try await pause(); try check()
             default: throw StripeNativeError.invalidResponse
             }
+            reads += 1
         }
         return false
     }
@@ -251,7 +274,7 @@ final class StripeFlowController {
             switch limits.next {
             case "SDK_COLLECT_KYC":
                 let input = try await identity(fields: verifiedTier == "L0" ? ["DATE_OF_BIRTH", "ID_NUMBER"] : [], prefilled: true)
-                try await sdk { try await $0.attachIdentity(input) }
+                try await attach(input)
             case "SDK_VERIFY_IDENTITY":
                 let presenter = try await forms.handOff()
                 try await sdk { try await $0.verifyIdentity(from: presenter) }
@@ -266,7 +289,7 @@ final class StripeFlowController {
     private func stepUpAfterRefusal(_ next: String) async throws -> Outcome {
         if next == "SDK_COLLECT_KYC" || verifiedTier == "L0" || verifiedTier == "NONE" {
             let input = try await identity(fields: verifiedTier == "L0" ? ["DATE_OF_BIRTH", "ID_NUMBER"] : [], prefilled: true)
-            try await sdk { try await $0.attachIdentity(input) }
+            try await attach(input)
             guard try await verifyCustomer() else { return .verificationRequired }
         }
         if next == "SDK_VERIFY_IDENTITY" {
@@ -338,7 +361,7 @@ final class StripeFlowController {
                 try await sdk { try await $0.verifyIdentity(from: presenter) }
                 } else {
                     let input = try await forms.identity(fields: [])
-                    try await sdk { try await $0.attachIdentity(input) }
+                    try await attach(input)
                 }
                 guard try await verifyCustomer() else { return .verificationPending }
             case ("REQUIRES_PAYMENT", "SDK_REGISTER_WALLET"):
