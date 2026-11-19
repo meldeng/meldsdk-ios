@@ -221,6 +221,18 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testStripeStuckAtARejectedL0AfterTheStepUpEndsAsVerificationPending() async throws {
+        let h = try FlowHarness()
+        let rejectedL0 = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "NOT_STARTED"])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            Array(repeating: rejectedL0, count: 17)
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .verificationPending)
+        XCTAssertTrue(h.forms.identityRequests.isEmpty)
+        XCTAssertEqual(h.driver.attached.count, 1, "the step-up goes once, however long Stripe takes")
+        await h.flow.close()
+    }
+
     func testARejectedL0WithItsFieldsStillMissingStepsUpWithTheWholeLevel1Prefill() async throws {
         let h = try FlowHarness()
         let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
