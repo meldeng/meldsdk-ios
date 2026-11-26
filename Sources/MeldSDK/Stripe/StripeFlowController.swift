@@ -17,6 +17,8 @@ protocol StripeFlowPresenting: AnyObject {
     func identity(fields: [String]) async throws -> StripeIdentityInput
     func address() async throws -> StripeAddressInput
     func showProgress(_ message: String)
+    /// Tells the customer why the flow ends over the current form; returns once they dismiss it.
+    func showRejection(title: String, message: String) async
     func close()
 }
 
@@ -223,6 +225,10 @@ final class StripeFlowController {
 
     private static func prefillKey(_ field: String) -> String { field.hasPrefix("ADDRESS_") ? "ADDRESS" : field }
 
+    static let rejectionTitle = "We couldn't verify your identity"
+    static let rejectionMessage = "The provider didn't accept the details you entered, so no payment was made. "
+        + "Check your details and try again, or choose another payment option."
+
     /// About 30 s at the 2 s pause, inside Stripe's documented polling window for a submitted tier.
     private static let attachWaitReads = 15
 
@@ -267,7 +273,10 @@ final class StripeFlowController {
             // The customer already typed every field: the same empty form again would loop, so wait out a tier
             // Stripe is still checking, then end with Stripe's reasons.
             case ("REJECTED", "SDK_COLLECT_KYC") where fullFormSubmitted:
-                guard result.tierStatuses.values.contains("PENDING") else { throw StripeKycRejected(errors: result.rejectionErrors) }
+                guard result.tierStatuses.values.contains("PENDING") else {
+                    await forms.showRejection(title: Self.rejectionTitle, message: Self.rejectionMessage)
+                    throw StripeKycRejected(errors: result.rejectionErrors)
+                }
                 guard waits < Self.attachWaitReads else { return false }
                 waits += 1
                 forms.showProgress("Checking your verification")

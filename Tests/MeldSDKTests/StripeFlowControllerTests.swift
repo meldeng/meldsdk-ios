@@ -242,6 +242,7 @@ final class StripeFlowControllerTests: XCTestCase {
         let outcome = try await h.flow.run()
         XCTAssertEqual(outcome, .kycRejected(["unsupported_country", "id_number_mismatch"]))
         XCTAssertEqual(h.forms.identityRequests, [[]], "the customer never sees the same empty form twice")
+        XCTAssertEqual(h.forms.rejections, [StripeFlowController.rejectionTitle], "the customer is told why before the form closes")
         XCTAssertEqual(h.driver.attached.count, 1)
         let event = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
         guard case let .error(error)? = event.first else { return XCTFail("expected an error event") }
@@ -260,6 +261,7 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(outcome, .submitted)
         XCTAssertEqual(h.forms.identityRequests, [[]])
         XCTAssertEqual(h.driver.attached.count, 1)
+        XCTAssertTrue(h.forms.rejections.isEmpty)
         await h.flow.close()
     }
 
@@ -1526,6 +1528,8 @@ private final class FlowForms: StripeFlowPresenting {
     }
     func address() async throws -> StripeAddressInput { calls.append("address"); return StripeAddressInput(line1: "Synthetic", line2: nil, city: "Synthetic", state: "CA", postalCode: "00000", country: "US") }
     func showProgress(_ message: String) {}
+    var rejections: [String] = []
+    func showRejection(title: String, message: String) async { rejections.append(title) }
     func close() {}
 }
 @MainActor
