@@ -14,6 +14,8 @@ struct StripeActionResponse: CustomStringConvertible {
     let highestVerifiedTier: String?
     /// Each tier's status ("L0" → "REJECTED"). Optional detail: an unreadable entry is left out, never rejected.
     let tierStatuses: [String: String]
+    /// Stripe's reason codes on the rejected tiers, deduplicated. Only code-shaped strings are kept, so no customer data leaks.
+    let rejectionErrors: [String]
     let prefill: StripePrefill?
     private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
@@ -61,8 +63,9 @@ struct StripeActionResponse: CustomStringConvertible {
                       let status = tier["status"] as? String else { return nil }
                 return (name, status)
             }, uniquingKeysWith: { first, _ in first })
+            rejectionErrors = Self.rejectionErrors(customer["tiers"])
             hasCustomer = true
-        } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; hasCustomer = false }
+        } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; rejectionErrors = []; hasCustomer = false }
         if next == "SDK_REGISTER_CUSTOMER", value["sdk"] != nil {
             throw StripeNativeError.invalidResponse
         }
@@ -144,6 +147,14 @@ struct StripeActionResponse: CustomStringConvertible {
         if let parsed = formatter.date(from: value) { return parsed }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
+    }
+
+    private static func rejectionErrors(_ raw: Any?) -> [String] {
+        var seen = Set<String>()
+        return (raw as? [Any] ?? []).flatMap { entry -> [String] in
+            guard let tier = entry as? [String: Any], tier["status"] as? String == "REJECTED" else { return [] }
+            return (tier["errors"] as? [Any] ?? []).compactMap { $0 as? String }
+        }.filter { StripeNativeValue.matches($0, "[A-Za-z0-9_.-]{1,64}") && seen.insert($0).inserted }
     }
 
     private static let statuses: Set<String> = ["READY", "NOT_STARTED", "PENDING", "AUTHORIZED", "VERIFIED", "REJECTED",

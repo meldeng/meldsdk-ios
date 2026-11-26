@@ -19,6 +19,15 @@ final class StripeActionResponseTests: XCTestCase {
             .validateCustomerAction(requiresDetails: false))
     }
 
+    func testRejectionErrorsComeOnlyFromRejectedTiersAndOnlyAsCodes() throws {
+        let response = try StripeActionResponse(["version": 1, "status": "REJECTED", "nextStep": "SDK_COLLECT_KYC", "customer": [
+            "missingFields": [], "tiers": [
+                ["tier": "L0", "status": "REJECTED", "errors": ["unsupported_country", 7, "Ada Lovelace lives at 1 Main St"]],
+                ["tier": "L1", "status": "PENDING", "errors": ["still_checking"]],
+                ["tier": "L2", "status": "REJECTED", "errors": ["unsupported_country", "document_expired"]]]]])
+        XCTAssertEqual(response.rejectionErrors, ["unsupported_country", "document_expired"])
+    }
+
     func testAnUnreadableTierEntryKeepsTheOtherTierStatuses() throws {
         let tiers: [Any] = [NSNull(), ["tier": "L0", "status": "REJECTED"], ["tier": 1, "status": "VERIFIED"], ["tier": "L1", "status": "NOT_STARTED"]]
         let response = try StripeActionResponse(["version": 1, "status": "REJECTED", "nextStep": "SDK_COLLECT_KYC",

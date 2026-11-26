@@ -33,6 +33,8 @@ final class StripeFlowLifetime: @unchecked Sendable {
 final class StripeFlowController {
     enum Outcome: Equatable {
         case completed, submitted, pending, verificationPending, verificationRequired, cancelled, rejected, expired, refused(Refusal)
+        /// Stripe still refuses the customer after they typed every identity field; carries Stripe's reason codes.
+        case kycRejected([String])
     }
     enum Refusal: String { case providerRejected = "create:PROVIDER_REJECTED", startNewOrder = "create:START_NEW_ORDER" }
     private let order: StripeNativeOrder
@@ -51,6 +53,8 @@ final class StripeFlowController {
     private var prefill: StripePrefill?
     private var submittedPrefill: Set<String> = []
     private var attachedKeys: Set<String> = []
+    /// The customer submitted the full identity form; a later rejection is Stripe's answer, not a missing field.
+    private var fullFormSubmitted = false
     private var verifiedTier: String?
     private var started = false
     private var refusedBeforePayment = false
@@ -118,6 +122,8 @@ final class StripeFlowController {
                 return try await continueSession(result)
             }
             return try await continueSession(action("REFRESH_QUOTE", key: UUID()))
+        } catch let rejection as StripeKycRejected {
+            return .kycRejected(rejection.errors)
         } catch StripeNativeError.cancelled {
             // Dismissing native checkout can race a payment. Only the server can resolve that outcome.
             guard lifetime.active else { throw StripeNativeError.cancelled }
@@ -185,7 +191,10 @@ final class StripeFlowController {
     private func identity(fields: [String], prefilled: Bool) async throws -> StripeIdentityInput {
         guard prefilled, let known = prefill?.identity else {
             // After a rejected prefill, ask for everything: Stripe may not list the prefilled fields as missing.
-            return try await forms.identity(fields: !submittedPrefill.isEmpty && !prefilled ? [] : fields)
+            let asked = !submittedPrefill.isEmpty && !prefilled ? [] : fields
+            let input = try await forms.identity(fields: asked)
+            if asked.isEmpty { fullFormSubmitted = true }
+            return input
         }
         let wanted = fields.isEmpty ? Self.identityFields : fields
         let submitted = submittedPrefill
@@ -255,6 +264,15 @@ final class StripeFlowController {
                 }
                 try await attach(try await identity(fields: unsent + ["DATE_OF_BIRTH", "ID_NUMBER"], prefilled: true))
                 waits = 0
+            // The customer already typed every field: the same empty form again would loop, so wait out a tier
+            // Stripe is still checking, then end with Stripe's reasons.
+            case ("REJECTED", "SDK_COLLECT_KYC") where fullFormSubmitted:
+                guard result.tierStatuses.values.contains("PENDING") else { throw StripeKycRejected(errors: result.rejectionErrors) }
+                guard waits < Self.attachWaitReads else { return false }
+                waits += 1
+                forms.showProgress("Checking your verification")
+                try await pause(); try check()
+                continue
             // Stripe verifies an attach asynchronously and keeps answering NOT_STARTED for data it already holds.
             case ("NOT_STARTED", "SDK_COLLECT_KYC") where Set(result.missingFields.map(Self.prefillKey)).isSubset(of: attachedKeys):
                 guard waits < Self.attachWaitReads else { return false }
@@ -450,3 +468,6 @@ final class StripeFlowController {
         guard lifetime.active, !Task.isCancelled else { throw StripeNativeError.cancelled }
     }
 }
+
+/// Stripe still rejects the customer after they submitted the full identity form.
+private struct StripeKycRejected: Error { let errors: [String] }

@@ -233,6 +233,36 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testARejectionAfterTheFullFormEndsWithStripesReasonsInsteadOfTheSameFormAgain() async throws {
+        let h = try FlowHarness()
+        let rejected = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"],
+                                            errors: ["L0": ["unsupported_country", "unsupported_country"], "L1": ["id_number_mismatch"]])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]), rejected]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .kycRejected(["unsupported_country", "id_number_mismatch"]))
+        XCTAssertEqual(h.forms.identityRequests, [[]], "the customer never sees the same empty form twice")
+        XCTAssertEqual(h.driver.attached.count, 1)
+        let event = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
+        guard case let .error(error)? = event.first else { return XCTFail("expected an error event") }
+        XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
+        XCTAssertEqual(error.detail, "kyc:REJECTED:unsupported_country,id_number_mismatch")
+        await h.flow.close()
+    }
+
+    func testAFullFormStripeIsStillCheckingWaitsInsteadOfEndingAsRejected() async throws {
+        let h = try FlowHarness()
+        let checking = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "PENDING", "L1": "REJECTED"])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]), checking, checking,
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [[]])
+        XCTAssertEqual(h.driver.attached.count, 1)
+        await h.flow.close()
+    }
+
     func testARejectedL0WithItsFieldsStillMissingStepsUpWithTheWholeLevel1Prefill() async throws {
         let h = try FlowHarness()
         let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
@@ -1373,9 +1403,9 @@ private final class FlowHarness {
         .success(["version": 1, "status": "READY", "nextStep": "REFRESH_QUOTE", "sdk": ["authenticationState": "RESTORE", "sessionHandle": "cos_synthetic"]])
     }
     static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = [],
-                         tier: String? = "L1", tiers: [String: String] = [:]) -> Result<[String: Any], Error> {
+                         tier: String? = "L1", tiers: [String: String] = [:], errors: [String: [String]] = [:]) -> Result<[String: Any], Error> {
         var customer: [String: Any] = ["missingFields": missing,
-                                       "tiers": tiers.sorted { $0.key < $1.key }.map { ["tier": $0.key, "status": $0.value, "errors": []] }]
+                                       "tiers": tiers.sorted { $0.key < $1.key }.map { ["tier": $0.key, "status": $0.value, "errors": errors[$0.key] ?? []] }]
         customer["highestVerifiedTier"] = tier
         return .success(["version": 1, "status": status, "nextStep": next, "customer": customer])
     }
