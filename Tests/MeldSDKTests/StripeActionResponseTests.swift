@@ -22,11 +22,11 @@ final class StripeActionResponseTests: XCTestCase {
     func testRejectionErrorsComeOnlyFromRejectedTiersAndOnlyAsCodes() throws {
         let response = try StripeActionResponse(["version": 1, "status": "REJECTED", "nextStep": "SDK_COLLECT_KYC", "customer": [
             "missingFields": [], "tiers": [
-                ["tier": "L0", "status": "REJECTED", "errors": ["unsupported_country", 7, "Ada Lovelace lives at 1 Main St",
-                                                                 "19900101", "601230102", "Ada", "ada.lovelace@example.test", "ada_1990"]],
-                ["tier": "L1", "status": "PENDING", "errors": ["still_checking"]],
-                ["tier": "L2", "status": "REJECTED", "errors": ["unsupported_country", "document_expired"]]]]])
-        XCTAssertEqual(response.rejectionErrors, ["unsupported_country", "document_expired"])
+                ["tier": "L0", "status": "REJECTED", "errors": ["ID_DOCUMENT_VERIFICATION_FAILED", 7, "Ada Lovelace lives at 1 Main St",
+                                                                 "19900101", "601230102", "ADA_LOVELACE", "ada.lovelace@example.test"]],
+                ["tier": "L1", "status": "PENDING", "errors": ["UNKNOWN"]],
+                ["tier": "L2", "status": "REJECTED", "errors": ["ID_DOCUMENT_VERIFICATION_FAILED", "MAX_VERIFICATION_ATTEMPTS_REACHED"]]]]])
+        XCTAssertEqual(response.rejectionErrors, ["ID_DOCUMENT_VERIFICATION_FAILED", "MAX_VERIFICATION_ATTEMPTS_REACHED"])
     }
 
     func testAnUnreadableTierEntryKeepsTheOtherTierStatuses() throws {

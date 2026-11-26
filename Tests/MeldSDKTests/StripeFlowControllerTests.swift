@@ -236,11 +236,11 @@ final class StripeFlowControllerTests: XCTestCase {
     func testARejectionAfterTheFullFormEndsWithStripesReasonsInsteadOfTheSameFormAgain() async throws {
         let h = try FlowHarness()
         let rejected = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"],
-                                            errors: ["L0": ["unsupported_country", "unsupported_country"], "L1": ["id_number_mismatch"]])
+                                            errors: ["L0": ["UNKNOWN", "UNKNOWN"], "L1": ["ID_DOCUMENT_VERIFICATION_FAILED"]])
         h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
             [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]), rejected]
         let outcome = try await h.flow.run()
-        XCTAssertEqual(outcome, .kycRejected(["unsupported_country", "id_number_mismatch"]))
+        XCTAssertEqual(outcome, .kycRejected(["UNKNOWN", "ID_DOCUMENT_VERIFICATION_FAILED"]))
         XCTAssertEqual(h.forms.identityRequests, [[]], "the customer never sees the same empty form twice")
         XCTAssertEqual(h.forms.rejections, [StripeFlowController.rejectionTitle], "the customer is told why before the form closes")
         XCTAssertEqual(h.forms.rejectionMessages, [StripeFlowController.rejectionMessage])
@@ -248,7 +248,7 @@ final class StripeFlowControllerTests: XCTestCase {
         let event = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
         guard case let .error(error)? = event.first else { return XCTFail("expected an error event") }
         XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
-        XCTAssertEqual(error.detail, "kyc:REJECTED:unsupported_country,id_number_mismatch")
+        XCTAssertEqual(error.detail, "kyc:REJECTED:UNKNOWN,ID_DOCUMENT_VERIFICATION_FAILED")
         await h.flow.close()
     }
 
