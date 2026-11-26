@@ -14,6 +14,9 @@ struct StripeActionResponse: CustomStringConvertible {
     let highestVerifiedTier: String?
     /// Each tier's status ("L0" → "REJECTED"). Optional detail: an unreadable entry is left out, never rejected.
     let tierStatuses: [String: String]
+    /// The reason codes on the rejected tiers, deduplicated. Only payment-domain's StripeVerificationError values are
+    /// kept, so nothing else (and no customer data) reaches MeldError.detail.
+    let rejectionErrors: [String]
     let prefill: StripePrefill?
     private let hasCustomer: Bool
     var description: String { "StripeActionResponse[REDACTED]" }
@@ -61,8 +64,9 @@ struct StripeActionResponse: CustomStringConvertible {
                       let status = tier["status"] as? String else { return nil }
                 return (name, status)
             }, uniquingKeysWith: { first, _ in first })
+            rejectionErrors = Self.rejectionErrors(customer["tiers"])
             hasCustomer = true
-        } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; hasCustomer = false }
+        } else { missingFields = []; highestVerifiedTier = nil; tierStatuses = [:]; rejectionErrors = []; hasCustomer = false }
         if next == "SDK_REGISTER_CUSTOMER", value["sdk"] != nil {
             throw StripeNativeError.invalidResponse
         }
@@ -144,6 +148,17 @@ struct StripeActionResponse: CustomStringConvertible {
         if let parsed = formatter.date(from: value) { return parsed }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
+    }
+
+    /// payment-domain `StripeContinuation.StripeVerificationError`.
+    private static let verificationErrors: Set<String> = ["ID_DOCUMENT_VERIFICATION_FAILED", "MAX_VERIFICATION_ATTEMPTS_REACHED", "UNKNOWN"]
+
+    private static func rejectionErrors(_ raw: Any?) -> [String] {
+        var seen = Set<String>()
+        return (raw as? [Any] ?? []).flatMap { entry -> [String] in
+            guard let tier = entry as? [String: Any], tier["status"] as? String == "REJECTED" else { return [] }
+            return (tier["errors"] as? [Any] ?? []).compactMap { $0 as? String }
+        }.filter { Self.verificationErrors.contains($0) && seen.insert($0).inserted }
     }
 
     private static let statuses: Set<String> = ["READY", "NOT_STARTED", "PENDING", "AUTHORIZED", "VERIFIED", "REJECTED",

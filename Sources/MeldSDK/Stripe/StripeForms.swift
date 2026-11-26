@@ -65,6 +65,8 @@ final class StripeForms: StripeFlowPresenting {
     private var active = true
     private var form: StripeFormViewController?
     private var navigation: UINavigationController?
+    /// The rejection alert's caller, resumed on OK, on a failed presentation, or on teardown.
+    private var rejection: CheckedContinuation<Void, Never>?
     /// Cancel on a form that is busy with Meld or Stripe: no form call is waiting, so the session cancels.
     var onCancelWhileBusy: (() -> Void)?
 
@@ -101,6 +103,23 @@ final class StripeForms: StripeFlowPresenting {
 
     func showProgress(_ message: String) { if active { form?.showBusy(message) } }
 
+    func showRejection(title: String, message: String) async {
+        guard active, let host = navigation ?? top() else { return }
+        await withCheckedContinuation { done in
+            rejection = done
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in self?.finishRejection() })
+            host.present(alert, animated: true)
+            if alert.presentingViewController == nil { finishRejection() }
+        }
+    }
+
+    private func finishRejection() {
+        let done = rejection
+        rejection = nil
+        done?.resume()
+    }
+
     func handOff() async throws -> UIViewController {
         guard active else { throw StripeNativeError.cancelled }
         await dismissSheet()
@@ -111,6 +130,7 @@ final class StripeForms: StripeFlowPresenting {
     func close() {
         guard active else { return }
         active = false
+        finishRejection()
         form?.abandon()
         navigation?.dismiss(animated: false)
         navigation = nil; form = nil

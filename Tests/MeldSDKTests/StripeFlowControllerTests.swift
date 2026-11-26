@@ -233,6 +233,68 @@ final class StripeFlowControllerTests: XCTestCase {
         await h.flow.close()
     }
 
+    func testARejectionAfterTheFullFormEndsWithStripesReasonsInsteadOfTheSameFormAgain() async throws {
+        let h = try FlowHarness()
+        let rejected = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"],
+                                            errors: ["L0": ["UNKNOWN", "UNKNOWN"], "L1": ["ID_DOCUMENT_VERIFICATION_FAILED"]])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]), rejected]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .kycRejected(["UNKNOWN", "ID_DOCUMENT_VERIFICATION_FAILED"]))
+        XCTAssertEqual(h.forms.identityRequests, [[]], "the customer never sees the same empty form twice")
+        XCTAssertEqual(h.forms.rejections, [StripeFlowController.rejectionTitle], "the customer is told why before the form closes")
+        XCTAssertEqual(h.forms.rejectionMessages, [StripeFlowController.rejectionMessage])
+        XCTAssertEqual(h.driver.attached.count, 1)
+        let event = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
+        guard case let .error(error)? = event.first else { return XCTFail("expected an error event") }
+        XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
+        XCTAssertEqual(error.detail, "kyc:REJECTED:UNKNOWN,ID_DOCUMENT_VERIFICATION_FAILED")
+        await h.flow.close()
+    }
+
+    func testAFieldStripeStillListsAfterTheFullFormIsAskedForInsteadOfEndingTheFlow() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]),
+             FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: ["ADDRESS_POSTAL_CODE"], tiers: ["L0": "REJECTED"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [[], ["ADDRESS_POSTAL_CODE"]])
+        XCTAssertTrue(h.forms.rejections.isEmpty)
+        await h.flow.close()
+    }
+
+    func testACheckoutKycRejectionNeverClaimsThatNoPaymentWasMade() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(),
+            FlowHarness.payment("REJECTED", next: "SDK_COLLECT_KYC", secret: false),
+            FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"])]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .kycRejected([]))
+        XCTAssertEqual(h.forms.identityRequests, [[]], "the checkout recovery form counts as the full form")
+        XCTAssertEqual(h.forms.rejectionMessages, [StripeFlowController.rejectionMessageAfterPayment])
+        XCTAssertTrue(h.flow.mayHaveFinancialAttempt)
+        let events = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: true, orderId: "synthetic-order")
+        guard case let .error(error)? = events.last else { return XCTFail("expected an error event") }
+        XCTAssertEqual(error.code, MeldErrorCode.paymentOutcomeUnknown, "a possible payment is never reported as rejected")
+        await h.flow.close()
+    }
+
+    func testAFullFormStripeIsStillCheckingWaitsInsteadOfEndingAsRejected() async throws {
+        let h = try FlowHarness()
+        let checking = FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "PENDING", "L1": "REJECTED"])
+        h.client.responses = [FlowHarness.bootstrap(prefill: FlowHarness.sumsubPrefillWithSsn)] + Array(FlowHarness.bootstrap.dropFirst()) +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]), checking, checking,
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [[]])
+        XCTAssertEqual(h.driver.attached.count, 1)
+        XCTAssertTrue(h.forms.rejections.isEmpty)
+        await h.flow.close()
+    }
+
     func testARejectedL0WithItsFieldsStillMissingStepsUpWithTheWholeLevel1Prefill() async throws {
         let h = try FlowHarness()
         let l0 = ["FIRST_NAME", "LAST_NAME", "ADDRESS_LINE_1", "ADDRESS_CITY", "ADDRESS_STATE", "ADDRESS_POSTAL_CODE", "ADDRESS_COUNTRY"]
@@ -1373,9 +1435,9 @@ private final class FlowHarness {
         .success(["version": 1, "status": "READY", "nextStep": "REFRESH_QUOTE", "sdk": ["authenticationState": "RESTORE", "sessionHandle": "cos_synthetic"]])
     }
     static func customer(_ status: String = "VERIFIED", next: String = "CREATE_PAYMENT_SESSION", missing: [String] = [],
-                         tier: String? = "L1", tiers: [String: String] = [:]) -> Result<[String: Any], Error> {
+                         tier: String? = "L1", tiers: [String: String] = [:], errors: [String: [String]] = [:]) -> Result<[String: Any], Error> {
         var customer: [String: Any] = ["missingFields": missing,
-                                       "tiers": tiers.sorted { $0.key < $1.key }.map { ["tier": $0.key, "status": $0.value, "errors": []] }]
+                                       "tiers": tiers.sorted { $0.key < $1.key }.map { ["tier": $0.key, "status": $0.value, "errors": errors[$0.key] ?? []] }]
         customer["highestVerifiedTier"] = tier
         return .success(["version": 1, "status": status, "nextStep": next, "customer": customer])
     }
@@ -1496,6 +1558,9 @@ private final class FlowForms: StripeFlowPresenting {
     }
     func address() async throws -> StripeAddressInput { calls.append("address"); return StripeAddressInput(line1: "Synthetic", line2: nil, city: "Synthetic", state: "CA", postalCode: "00000", country: "US") }
     func showProgress(_ message: String) {}
+    var rejections: [String] = []
+    var rejectionMessages: [String] = []
+    func showRejection(title: String, message: String) async { rejections.append(title); rejectionMessages.append(message) }
     func close() {}
 }
 @MainActor
