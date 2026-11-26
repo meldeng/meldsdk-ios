@@ -228,6 +228,8 @@ final class StripeFlowController {
     static let rejectionTitle = "We couldn't verify your identity"
     static let rejectionMessage = "The provider didn't accept the details you entered, so no payment was made. "
         + "Check your details and try again, or choose another payment option."
+    static let rejectionMessageAfterPayment = "The provider didn't accept the details you entered. "
+        + "Check this order's status before trying again."
 
     /// About 30 s at the 2 s pause, inside Stripe's documented polling window for a submitted tier.
     private static let attachWaitReads = 15
@@ -270,11 +272,14 @@ final class StripeFlowController {
                 }
                 try await attach(try await identity(fields: unsent + ["DATE_OF_BIRTH", "ID_NUMBER"], prefilled: true))
                 waits = 0
-            // The customer already typed every field: the same empty form again would loop, so wait out a tier
-            // Stripe is still checking, then end with Stripe's reasons.
-            case ("REJECTED", "SDK_COLLECT_KYC") where fullFormSubmitted:
+            // The customer already typed every field and Stripe asks for nothing more: the same empty form again
+            // would loop, so wait out a tier Stripe is still checking, then end with Stripe's reasons. A listed
+            // missing field still goes to the form below, so the customer can supply it.
+            case ("REJECTED", "SDK_COLLECT_KYC") where fullFormSubmitted && result.missingFields.isEmpty:
                 guard result.tierStatuses.values.contains("PENDING") else {
-                    await forms.showRejection(title: Self.rejectionTitle, message: Self.rejectionMessage)
+                    // A checkout or resumed session may already hold a payment, so never claim none was made then.
+                    let message = mayHaveFinancialAttempt ? Self.rejectionMessageAfterPayment : Self.rejectionMessage
+                    await forms.showRejection(title: Self.rejectionTitle, message: message)
                     throw StripeKycRejected(errors: result.rejectionErrors)
                 }
                 guard waits < Self.attachWaitReads else { return false }
@@ -405,6 +410,7 @@ final class StripeFlowController {
                 try await sdk { try await $0.verifyIdentity(from: presenter) }
                 } else {
                     let input = try await forms.identity(fields: [])
+                    fullFormSubmitted = true
                     try await attach(input)
                 }
                 guard try await verifyCustomer() else { return .verificationPending }

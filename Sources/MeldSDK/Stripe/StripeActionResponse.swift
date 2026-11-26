@@ -14,7 +14,8 @@ struct StripeActionResponse: CustomStringConvertible {
     let highestVerifiedTier: String?
     /// Each tier's status ("L0" → "REJECTED"). Optional detail: an unreadable entry is left out, never rejected.
     let tierStatuses: [String: String]
-    /// Stripe's reason codes on the rejected tiers, deduplicated. Only code-shaped strings are kept, so no customer data leaks.
+    /// Stripe's reason codes on the rejected tiers, deduplicated. Only lowercase snake_case words are kept (Stripe's
+    /// code style), which excludes digits, names, emails and dates, so no customer data reaches MeldError.detail.
     let rejectionErrors: [String]
     let prefill: StripePrefill?
     private let hasCustomer: Bool
@@ -154,7 +155,7 @@ struct StripeActionResponse: CustomStringConvertible {
         return (raw as? [Any] ?? []).flatMap { entry -> [String] in
             guard let tier = entry as? [String: Any], tier["status"] as? String == "REJECTED" else { return [] }
             return (tier["errors"] as? [Any] ?? []).compactMap { $0 as? String }
-        }.filter { StripeNativeValue.matches($0, "[A-Za-z0-9_.-]{1,64}") && seen.insert($0).inserted }
+        }.filter { StripeNativeValue.matches($0, "[a-z]+(?:_[a-z]+)+") && $0.count <= 64 && seen.insert($0).inserted }
     }
 
     private static let statuses: Set<String> = ["READY", "NOT_STARTED", "PENDING", "AUTHORIZED", "VERIFIED", "REJECTED",

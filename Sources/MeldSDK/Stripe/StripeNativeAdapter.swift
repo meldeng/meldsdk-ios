@@ -117,7 +117,7 @@ final class StripePaymentSession: MeldProviderSession {
                 message: "The payment expired before it completed. Choose another payment option.", detail: "submission:EXPIRED",
                 recoverable: false))]
         // No charge was attempted. The detail carries Stripe's reason codes so the app can explain the refusal.
-        case let .kycRejected(errors):
+        case let .kycRejected(errors) where !mayHaveFinancialAttempt:
             return [declined("The provider couldn't verify the customer's identity. No payment was attempted.",
                              (["kyc:REJECTED"] + (errors.isEmpty ? [] : [errors.joined(separator: ",")])).joined(separator: ":"))]
         case .verificationRequired:
@@ -127,7 +127,8 @@ final class StripePaymentSession: MeldProviderSession {
         case .verificationPending where !mayHaveFinancialAttempt:
             return [.error(MeldError(orderId: orderId, code: MeldErrorCode.verificationPending,
                 message: "The provider is reviewing the customer's verification. No payment was attempted.", recoverable: false))]
-        case .pending, .verificationPending:
+        // A KYC refusal after a payment may have started cannot prove the payment failed.
+        case .pending, .verificationPending, .kycRejected:
             return [pending, .error(MeldError(orderId: orderId, code: MeldErrorCode.paymentOutcomeUnknown,
                 message: MeldErrorMessage.paymentOutcomeUnknown, recoverable: false))]
         }

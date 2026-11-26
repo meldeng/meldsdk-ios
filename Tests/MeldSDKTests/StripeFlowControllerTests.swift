@@ -243,11 +243,41 @@ final class StripeFlowControllerTests: XCTestCase {
         XCTAssertEqual(outcome, .kycRejected(["unsupported_country", "id_number_mismatch"]))
         XCTAssertEqual(h.forms.identityRequests, [[]], "the customer never sees the same empty form twice")
         XCTAssertEqual(h.forms.rejections, [StripeFlowController.rejectionTitle], "the customer is told why before the form closes")
+        XCTAssertEqual(h.forms.rejectionMessages, [StripeFlowController.rejectionMessage])
         XCTAssertEqual(h.driver.attached.count, 1)
         let event = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: h.flow.mayHaveFinancialAttempt, orderId: "synthetic-order")
         guard case let .error(error)? = event.first else { return XCTFail("expected an error event") }
         XCTAssertEqual(error.code, MeldErrorCode.paymentRejected)
         XCTAssertEqual(error.detail, "kyc:REJECTED:unsupported_country,id_number_mismatch")
+        await h.flow.close()
+    }
+
+    func testAFieldStripeStillListsAfterTheFullFormIsAskedForInsteadOfEndingTheFlow() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap +
+            [FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"]),
+             FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", missing: ["ADDRESS_POSTAL_CODE"], tiers: ["L0": "REJECTED"]),
+             FlowHarness.customer(), FlowHarness.payment(), FlowHarness.payment(), FlowHarness.read("SUBMITTED", "WAIT_FOR_PAYMENT")]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .submitted)
+        XCTAssertEqual(h.forms.identityRequests, [[], ["ADDRESS_POSTAL_CODE"]])
+        XCTAssertTrue(h.forms.rejections.isEmpty)
+        await h.flow.close()
+    }
+
+    func testACheckoutKycRejectionNeverClaimsThatNoPaymentWasMade() async throws {
+        let h = try FlowHarness()
+        h.client.responses = FlowHarness.bootstrap + [FlowHarness.customer(), FlowHarness.payment(),
+            FlowHarness.payment("REJECTED", next: "SDK_COLLECT_KYC", secret: false),
+            FlowHarness.customer("REJECTED", next: "SDK_COLLECT_KYC", tiers: ["L0": "REJECTED", "L1": "REJECTED"])]
+        let outcome = try await h.flow.run()
+        XCTAssertEqual(outcome, .kycRejected([]))
+        XCTAssertEqual(h.forms.identityRequests, [[]], "the checkout recovery form counts as the full form")
+        XCTAssertEqual(h.forms.rejectionMessages, [StripeFlowController.rejectionMessageAfterPayment])
+        XCTAssertTrue(h.flow.mayHaveFinancialAttempt)
+        let events = StripePaymentSession.events(for: outcome, mayHaveFinancialAttempt: true, orderId: "synthetic-order")
+        guard case let .error(error)? = events.last else { return XCTFail("expected an error event") }
+        XCTAssertEqual(error.code, MeldErrorCode.paymentOutcomeUnknown, "a possible payment is never reported as rejected")
         await h.flow.close()
     }
 
@@ -1529,7 +1559,8 @@ private final class FlowForms: StripeFlowPresenting {
     func address() async throws -> StripeAddressInput { calls.append("address"); return StripeAddressInput(line1: "Synthetic", line2: nil, city: "Synthetic", state: "CA", postalCode: "00000", country: "US") }
     func showProgress(_ message: String) {}
     var rejections: [String] = []
-    func showRejection(title: String, message: String) async { rejections.append(title) }
+    var rejectionMessages: [String] = []
+    func showRejection(title: String, message: String) async { rejections.append(title); rejectionMessages.append(message) }
     func close() {}
 }
 @MainActor
